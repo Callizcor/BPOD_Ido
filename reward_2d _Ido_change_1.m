@@ -89,7 +89,7 @@ for currentTrial = 1:MaxTrials
 
     % Global timer for response period (3 seconds)
     sma = SetGlobalTimer(sma, 'TimerID', 2, 'Duration', S.GUI.ResponsePeriodDuration, ...
-                         'OnsetDelay', 0, 'SendGlobalTimerEvents', 1);
+                         'OnsetDelay', 0, 'Channel', 'PWM1', 'SendGlobalTimerEvents', 1);
 
     % Start camera trigger
     sma = AddState(sma, 'Name', 'TimerTrig', ...
