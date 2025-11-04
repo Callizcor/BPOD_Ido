@@ -28,27 +28,40 @@ This protocol implements a 2-lickport stationary task where mice self-initiate r
 ## Task Structure
 
 ### Trial Definition
-Each trial = One complete cycle of **Wait Period → Response Period**
+**IMPORTANT**: Trial = From entering one Response Period to entering the next Response Period
+
+This means a single trial includes:
+- Wait Period (with potential multiple penalty additions)
+- Ready for Response phase
+- Response Period (3 seconds of reward delivery)
+
+The trial does NOT end when an incorrect lick occurs - it continues within the same trial.
 
 ### Phase 1: Wait Period
 **Purpose**: Enforce minimum time between response opportunities
 
 **Duration**:
-- First trial: 0 seconds (starts immediately)
-- Subsequent trials: `max(2, min(15, accumulated_penalty))` seconds
+- First trial: 0 seconds (starts immediately at ReadyForResponse)
+- Subsequent trials: Starts at 2 seconds minimum
 
 **Behavior**:
 - Both Port 1 and Port 2 are monitored
 - Any lick during wait period = **Incorrect Lick**
-  - Adds 3 seconds to penalty time
+  - Adds 3 seconds to REMAINING wait time (within the same trial)
   - Licks within 0.5s count as single burst (only one penalty)
-  - Trial ends immediately
-  - Penalty carries to next trial
+  - Wait period extends and continues in same trial
+  - Maximum remaining time capped at 15 seconds
 
-**Logic**:
+**Logic (within same trial)**:
 ```
-penalty_time = min(15, penalty_time + 3)  // Cap at 15s max
+remaining_time = min(15, remaining_time + 3)  // Add penalty, cap at 15s remaining
+// Trial continues - does NOT end
 ```
+
+**Implementation**:
+Uses time-sliced states (0.5s increments) to dynamically route between different remaining-time states:
+- Wait_15.0s → Wait_14.5s → ... → Wait_0.5s → ReadyForResponse
+- On lick at Wait_X.Ys: → IgnoreBurst (0.5s) → Wait_(X+3)s (capped at 15s)
 
 ### Phase 2: Ready for Response
 **Purpose**: Wait indefinitely for mouse to initiate response
@@ -93,51 +106,59 @@ Trial 2:
   → Trial 2 ends, penalty = 0
 ```
 
-### Scenario 2: Incorrect Licks with Penalties
+### Scenario 2: Incorrect Licks with Penalties (CORRECTED)
 ```
 Trial 1:
-  [Wait: 2s] → Mouse licks Port 1 at t=0.5s [INCORRECT]
-    - Penalty added: +3s
-    - Trial ends immediately
-  → penalty_time = 3s
+  [Wait: 2s minimum]
+    - t=0.5s: Mouse licks Port 1 [INCORRECT]
+      → Remaining time resets to: min(15, 1.5s + 3s) = 4.5s
+      → Enter IgnoreBurst for 0.5s
+    - t=1.5s: Mouse licks again [INCORRECT - new burst]
+      → Remaining time: min(15, 3.5s + 3s) = 6.5s
+      → Enter IgnoreBurst for 0.5s
+    - t=2.5s: Mouse licks [same burst as t=1.5s, ignored]
+    - Mouse finally waits...
+    - t=8.5s: Wait completes → ReadyForResponse
+    - t=9.0s: Mouse licks Port 2 → [Response: 3s on Port2]
+    - 6 licks during response → 6 × 0.01s = 0.06s water
+  Trial 1 ends (total duration: ~12s)
 
 Trial 2:
-  [Wait: 5s] (2s base + 3s penalty)
-    - Mouse licks at t=1s [INCORRECT] → +3s penalty
-    - Mouse licks at t=1.2s [same burst, ignored]
-    - Mouse licks at t=1.4s [same burst, ignored]
-    - Trial ends
-  → penalty_time = 6s
-
-Trial 3:
-  [Wait: 8s] (2s base + 6s penalty)
-    - Mouse licks at t=3s [INCORRECT] → +3s
-    - Penalty now: 9s
-    - Trial ends
-  → penalty_time = 9s
-
-Trial 4:
-  [Wait: 11s] (2s + 9s)
-    - Mouse waits full 11s
-    - Mouse licks Port 1 at t=12s → [Response: 3s on Port1]
-    - Successful! → penalty_time resets to 0
+  [Wait: 2s minimum]
+    - Mouse waits full 2s without licking
+    - t=2.1s: Ready for response
+    - t=2.5s: Mouse licks Port 1 → [Response: 3s on Port1]
+    - 10 licks during response → 0.10s water
+  Trial 2 ends (total duration: ~5.5s)
 ```
 
-### Scenario 3: Penalty Cap Example
+### Scenario 3: Penalty Cap Example (CORRECTED)
 ```
 Trial N:
-  Current penalty = 14s
-  [Wait: 15s] (capped at max)
-    - Mouse licks at t=1s [INCORRECT] → Try to add +3s
-    - New penalty = min(15, 14 + 3) = 15s (capped)
-  → penalty_time = 15s
+  [Wait: 2s minimum]
+    - t=0.2s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 1.8s + 3s) = 4.8s
+    - t=1.5s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 3.8s + 3s) = 6.8s
+    - t=2.5s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 5.3s + 3s) = 8.3s
+    - t=3.5s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 7.8s + 3s) = 10.8s
+    - t=4.5s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 10.3s + 3s) = 13.3s
+    - t=5.5s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 12.8s + 3s) = 15.0s (CAPPED!)
+    - t=7.0s: Mouse licks [INCORRECT]
+      → Remaining: min(15, 13.5s + 3s) = 15.0s (still capped)
 
-Next trial:
-  [Wait: 15s] (still capped)
-    - If mouse waits 4 seconds then licks [INCORRECT]
-    - Remaining time was 11s
-    - New remaining = min(15, 11 + 3) = 14s
-    - Must wait 14 more seconds
+    - Mouse finally stops licking and waits...
+    - t=22.0s: Wait completes (15s from last lick)
+    - t=22.5s: Mouse licks Port 1 → [Response: 3s]
+  Trial N ends
+
+Trial N+1:
+  [Wait: 2s minimum] - Penalty resets after successful response!
+    - Fresh start with 2s minimum
 ```
 
 ---
@@ -195,7 +216,8 @@ Port2WaterOutput = {'ValveState', 2^1}; % Port 2 → Valve 2 (bit 1)
 | ResponsePeriodDuration | 3 s | Duration of reward window |
 | IncorrectLickPenalty | 3 s | Time added per incorrect lick burst |
 | LickBurstWindow | 0.5 s | Time window to group licks as one burst |
-| MaxWaitTime | 15 s | Maximum wait time cap |
+| MaxWaitTime | 15 s | Maximum remaining wait time cap |
+| WaitTimeIncrement | 0.5 s | Time increment for wait states (affects state machine granularity) |
 
 All parameters adjustable via BPOD GUI during session.
 
@@ -204,14 +226,14 @@ All parameters adjustable via BPOD GUI during session.
 ## Data Saved Per Trial
 
 ```matlab
-BpodSystem.Data.TrialTypes(i)              % 0=wait violated, 1=Port1, 2=Port2
-BpodSystem.Data.TrialOutcome(i)            % 1=successful, 0=wait violated
-BpodSystem.Data.WaitDuration(i)            % Actual wait duration (seconds)
-BpodSystem.Data.ResponsePort(i)            % Which port chosen (0/1/2)
-BpodSystem.Data.NumLicksInResponse(i)      % Number of licks during response
+BpodSystem.Data.TrialTypes(i)              % 1=Port1, 2=Port2
+BpodSystem.Data.TrialOutcome(i)            % 1=successful response
+BpodSystem.Data.ActualWaitDuration(i)      % Actual total wait duration (seconds)
+BpodSystem.Data.ResponsePort(i)            % Which port chosen (1/2)
+BpodSystem.Data.NumLicksInResponse(i)      % Number of licks during response period
 BpodSystem.Data.TotalWaterDelivered(i)     % Total water delivered (seconds)
-BpodSystem.Data.IncorrectLicksDuringWait(i) % Number of incorrect lick bursts
-BpodSystem.Data.PenaltyTimeAccumulated(i)  % Penalty at trial start
+BpodSystem.Data.NumIncorrectLickBursts(i)  % Number of incorrect lick bursts in wait period
+BpodSystem.Data.MinimumWaitAtStart(i)      % Starting minimum wait for this trial
 BpodSystem.Data.RawEvents.Trial{i}         % All events and timestamps
 BpodSystem.Data.bitcode{i}                 % Trial sync bitcode
 ```
@@ -221,23 +243,25 @@ BpodSystem.Data.bitcode{i}                 % Trial sync bitcode
 ## Outcome Plot
 
 Real-time visualization showing:
-- **Red X**: Wait period violated (incorrect lick)
 - **Green Circle**: Successful response on Port 1
 - **Blue Circle**: Successful response on Port 2
 
 Y-axis categories:
-- 0.5: Wait violated
-- 1.5: Port 1 responses
-- 2.5: Port 2 responses
+- 1.0: Port 1 responses
+- 2.0: Port 2 responses
+
+Note: All trials result in a response (no "missed" or "violated" trials). The number of incorrect lick bursts per trial is tracked in the data but not shown on this plot.
 
 ---
 
 ## Key Design Decisions
 
-### 1. Penalty Accumulation
-- Penalties accumulate across trials until successful response
-- Cap at 15 seconds prevents excessive delays
-- Resets to 0 after successful response period
+### 1. Penalty Accumulation (CORRECTED)
+- Penalties accumulate WITHIN THE SAME TRIAL by extending remaining wait time
+- Each incorrect lick burst adds 3s to remaining wait time
+- Remaining time capped at 15 seconds maximum
+- Trial does NOT end on incorrect lick - continues with extended wait
+- Penalty resets to baseline (2s) after successful Response Period completes
 
 ### 2. Lick Burst Detection
 - 0.5s window groups rapid licks as single burst
@@ -253,8 +277,16 @@ Y-axis categories:
 - Removed all Zaber motor code from original protocol
 - Removed position calculations and movement states
 - Simplified hardware requirements
+- Both lickports remain stationary throughout session
 
-### 5. Infinite Wait in ReadyForResponse
+### 5. Time-Sliced State Machine
+- Uses 0.5s time increments to create dynamic wait period
+- 31 wait states: Wait_0s, Wait_0.5s, Wait_1.0s, ..., Wait_15.0s
+- 31 ignore burst states: one for each possible starting wait level
+- On lick: transitions to IgnoreBurst → adds 3s to remaining time
+- Allows in-trial penalty accumulation without ending state machine
+
+### 6. Infinite Wait in ReadyForResponse
 - 3600s timer (1 hour) effectively infinite
 - Mouse cannot miss opportunity by waiting
 - Allows natural initiation timing

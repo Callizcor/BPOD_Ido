@@ -1,16 +1,18 @@
-function reward_2d_lickport_protocol
+function reward_2d_lickport_protocol_v2
 % Modified BPOD protocol for 2-port lick-triggered reward task
 % No lickport movement - both ports stationary and active throughout session
 %
-% Task Design:
-% - Wait Period: Minimum 2 seconds between response periods
-% - Incorrect licks during wait add 3s penalty (licks within 0.5s = 1 burst)
+% CORRECTED Task Design:
+% - TRIAL = From entering one Response Period to entering the next Response Period
+% - Wait Period: Minimum 2 seconds before response period can start
+% - Incorrect licks during wait add 3s to REMAINING wait time (within same trial)
+% - Licks within 0.5s count as single burst (only one 3s penalty)
 % - Maximum remaining wait time capped at 15 seconds
 % - Response Period: Starts when mouse licks either port after wait completes
 %   - Duration: 3 seconds
 %   - Only the first-licked port gives water during that response period
 %   - Each lick triggers 0.01s water bolus
-% - No missed trials - mouse can wait indefinitely
+% - No missed trials - mouse can wait indefinitely after wait period expires
 
 global BpodSystem;
 
@@ -31,27 +33,24 @@ if isempty(fieldnames(S))
     S.GUI.IncorrectLickPenalty = 3;        % Penalty added per lick burst (seconds)
     S.GUI.LickBurstWindow = 0.5;           % Time window to group licks as single burst (seconds)
     S.GUI.MaxWaitTime = 15;                % Maximum remaining wait time (seconds)
+    S.GUI.WaitTimeIncrement = 0.5;         % Time increment for wait states (seconds)
 
     S.GUIPanels.TaskParameters = {'WaterValveTime', 'MinWaitPeriod', 'ResponsePeriodDuration', ...
-                                   'IncorrectLickPenalty', 'LickBurstWindow', 'MaxWaitTime'};
+                                   'IncorrectLickPenalty', 'LickBurstWindow', 'MaxWaitTime', 'WaitTimeIncrement'};
 end
 
 %% Initialize BpodParameterGUI
 BpodParameterGUI('init', S);
 
 %% Initialize Data Storage
-BpodSystem.Data.TrialTypes = [];          % 1=Port1 response, 2=Port2 response, 0=wait violated
-BpodSystem.Data.TrialOutcome = [];        % 1=successful response, 0=wait violated
-BpodSystem.Data.WaitDuration = [];        % Actual wait duration for each trial
-BpodSystem.Data.ResponsePort = [];        % Which port was chosen (1 or 2, 0 if none)
+BpodSystem.Data.TrialTypes = [];          % 1=Port1 response, 2=Port2 response
+BpodSystem.Data.TrialOutcome = [];        % 1=successful response
+BpodSystem.Data.ActualWaitDuration = [];  % Actual total wait time for each trial
+BpodSystem.Data.ResponsePort = [];        % Which port was chosen (1 or 2)
 BpodSystem.Data.NumLicksInResponse = [];  % Number of licks during response period
 BpodSystem.Data.TotalWaterDelivered = []; % Total water per trial (seconds)
-BpodSystem.Data.IncorrectLicksDuringWait = []; % Number of incorrect lick bursts
-BpodSystem.Data.PenaltyTimeAccumulated = []; % Penalty time at start of each trial
-
-%% Initialize penalty tracking (persistent across trials)
-penalty_time = 0;  % Accumulated penalty in seconds
-last_trial_outcome = 1; % 1=successful, 0=wait violated
+BpodSystem.Data.NumIncorrectLickBursts = []; % Number of incorrect lick bursts per trial
+BpodSystem.Data.MinimumWaitAtStart = [];  % Starting minimum wait for trial
 
 %% Initialize plots
 BpodSystem.ProtocolFigures.OutcomePlotFig = figure('Position', [200 200 1000 400], ...
@@ -69,18 +68,16 @@ for currentTrial = 1:MaxTrials
 
     disp(['Starting trial ', num2str(currentTrial)]);
 
-    %% Calculate wait duration for this trial
+    %% Determine starting wait duration for this trial
     if currentTrial == 1
         % First trial starts immediately
-        wait_duration = 0;
+        initial_wait = 0;
     else
-        % Subsequent trials: minimum 2s + any accumulated penalty (capped at 15s)
-        wait_duration = min(S.GUI.MaxWaitTime, S.GUI.MinWaitPeriod + penalty_time);
+        % Subsequent trials: minimum 2s wait
+        initial_wait = S.GUI.MinWaitPeriod;
     end
 
-    % Store penalty at trial start
-    BpodSystem.Data.PenaltyTimeAccumulated(currentTrial) = penalty_time;
-    BpodSystem.Data.WaitDuration(currentTrial) = wait_duration;
+    BpodSystem.Data.MinimumWaitAtStart(currentTrial) = initial_wait;
 
     %% Build state machine
     sma = NewStateMachine();
@@ -100,7 +97,7 @@ for currentTrial = 1:MaxTrials
         'StateChangeConditions', {'Tup', 'StartBitcode'}, ...
         'OutputActions', {'GlobalTimerTrig', '1'});
 
-    %% Generate and send bitcode for trial number (for sync with external systems)
+    %% Generate and send bitcode for trial number
     time_period = 0.02;
     digits = 20;
 
@@ -141,76 +138,106 @@ for currentTrial = 1:MaxTrials
     % End bitcode
     sma = AddState(sma, 'Name', 'EndBitcode', ...
         'Timer', time_period * 3, ...
-        'StateChangeConditions', {'Tup', 'PreWait'}, ...
+        'StateChangeConditions', {'Tup', 'StartWait'}, ...
         'OutputActions', {'BNC2', 1});
 
-    % Brief pre-wait state
-    sma = AddState(sma, 'Name', 'PreWait', ...
+    % Brief state before wait
+    sma = AddState(sma, 'Name', 'StartWait', ...
         'Timer', 0.001, ...
-        'StateChangeConditions', {'Tup', 'WaitPeriod'}, ...
+        'StateChangeConditions', {'Tup', 'WaitPeriodRouter'}, ...
         'OutputActions', {});
 
-    %% Wait Period State
-    % Monitor both ports - any lick triggers penalty
-    if wait_duration > 0
-        sma = AddState(sma, 'Name', 'WaitPeriod', ...
-            'Timer', wait_duration, ...
-            'StateChangeConditions', {'Port1In', 'IncorrectLick', 'Port2In', 'IncorrectLick', ...
-                                     'Tup', 'ReadyForResponse'}, ...
-            'OutputActions', {});
+    %% Wait Period States - Using time-sliced approach
+    % Create wait states from 0s to MaxWaitTime in WaitTimeIncrement steps
+    % Each state has duration = WaitTimeIncrement
+    % On Tup: go to next lower remaining time state
+    % On lick: add IncorrectLickPenalty seconds (jump forward), capped at MaxWaitTime
 
-        % Incorrect lick detected - start burst ignore period
-        sma = AddState(sma, 'Name', 'IncorrectLick', ...
-            'Timer', 0.001, ...
-            'StateChangeConditions', {'Tup', 'LickBurstIgnore'}, ...
-            'OutputActions', {});
+    time_increment = S.GUI.WaitTimeIncrement;
+    max_wait = S.GUI.MaxWaitTime;
+    penalty = S.GUI.IncorrectLickPenalty;
+    burst_window = S.GUI.LickBurstWindow;
 
-        % Ignore additional licks in the burst (0.5s window)
-        sma = AddState(sma, 'Name', 'LickBurstIgnore', ...
-            'Timer', S.GUI.LickBurstWindow, ...
-            'StateChangeConditions', {'Tup', 'TrialEnd'}, ...
-            'OutputActions', {});
+    % Calculate number of states needed
+    num_wait_states = round(max_wait / time_increment) + 1; % 0, 0.5, 1.0, ..., 15.0
+
+    % Router state to select correct starting wait state
+    initial_wait_increments = round(initial_wait / time_increment);
+    if initial_wait_increments == 0
+        wait_start_state = 'ReadyForResponse';
     else
-        % Skip wait period if duration is 0 (first trial)
-        sma = AddState(sma, 'Name', 'WaitPeriod', ...
-            'Timer', 0.001, ...
-            'StateChangeConditions', {'Tup', 'ReadyForResponse'}, ...
-            'OutputActions', {});
+        wait_start_state = sprintf('Wait_%.1fs', initial_wait);
+    end
 
-        % Dummy states (won't be reached)
-        sma = AddState(sma, 'Name', 'IncorrectLick', ...
-            'Timer', 0.001, ...
-            'StateChangeConditions', {'Tup', 'TrialEnd'}, ...
-            'OutputActions', {});
+    sma = AddState(sma, 'Name', 'WaitPeriodRouter', ...
+        'Timer', 0.001, ...
+        'StateChangeConditions', {'Tup', wait_start_state}, ...
+        'OutputActions', {});
 
-        sma = AddState(sma, 'Name', 'LickBurstIgnore', ...
-            'Timer', 0.001, ...
-            'StateChangeConditions', {'Tup', 'TrialEnd'}, ...
+    % Create wait states in descending order (from max to min)
+    for i = num_wait_states:-1:1
+        remaining_time = (i - 1) * time_increment; % 15.0, 14.5, ..., 0.5, 0
+        state_name = sprintf('Wait_%.1fs', remaining_time);
+
+        if remaining_time <= time_increment
+            % Last increment - next state is ready for response
+            next_state = 'ReadyForResponse';
+            state_timer = remaining_time;
+            if state_timer < 0.001
+                state_timer = 0.001;
+            end
+        else
+            % Next state is one increment less
+            next_remaining = remaining_time - time_increment;
+            next_state = sprintf('Wait_%.1fs', next_remaining);
+            state_timer = time_increment;
+        end
+
+        % On lick, go to ignore burst state for this level
+        ignore_state = sprintf('IgnoreBurst_from_%.1fs', remaining_time);
+
+        sma = AddState(sma, 'Name', state_name, ...
+            'Timer', state_timer, ...
+            'StateChangeConditions', {'Tup', next_state, ...
+                                     'Port1In', ignore_state, ...
+                                     'Port2In', ignore_state}, ...
+            'OutputActions', {});
+    end
+
+    % Create ignore burst states
+    for i = 1:num_wait_states
+        remaining_time = (i - 1) * time_increment;
+        ignore_state = sprintf('IgnoreBurst_from_%.1fs', remaining_time);
+
+        % After burst window, add penalty to remaining time (capped at max)
+        new_remaining = min(max_wait, remaining_time + penalty);
+        next_wait_state = sprintf('Wait_%.1fs', new_remaining);
+
+        sma = AddState(sma, 'Name', ignore_state, ...
+            'Timer', burst_window, ...
+            'StateChangeConditions', {'Tup', next_wait_state}, ...
             'OutputActions', {});
     end
 
     %% Ready for Response State
     % Wait indefinitely for first lick on either port
     sma = AddState(sma, 'Name', 'ReadyForResponse', ...
-        'Timer', 3600, ...  % Essentially infinite - mouse can't "miss"
+        'Timer', 3600, ...  % Essentially infinite
         'StateChangeConditions', {'Port1In', 'ResponsePeriod_Port1_Start', ...
                                  'Port2In', 'ResponsePeriod_Port2_Start'}, ...
         'OutputActions', {});
 
     %% Response Period - Port 1
-    % Start response period timer for Port 1
     sma = AddState(sma, 'Name', 'ResponsePeriod_Port1_Start', ...
         'Timer', 0.001, ...
         'StateChangeConditions', {'Tup', 'GiveWater_Port1_First'}, ...
         'OutputActions', {'GlobalTimerTrig', '2'});
 
-    % Give water for the first lick that triggered response period
     sma = AddState(sma, 'Name', 'GiveWater_Port1_First', ...
         'Timer', S.GUI.WaterValveTime, ...
         'StateChangeConditions', {'Tup', 'ResponsePeriod_Port1', 'GlobalTimer2_End', 'TrialEnd'}, ...
         'OutputActions', Port1WaterOutput);
 
-    % Response period active - wait for more licks on Port 1
     sma = AddState(sma, 'Name', 'ResponsePeriod_Port1', ...
         'Timer', S.GUI.ResponsePeriodDuration, ...
         'StateChangeConditions', {'Port1In', 'GiveWater_Port1', ...
@@ -218,26 +245,22 @@ for currentTrial = 1:MaxTrials
                                  'Tup', 'TrialEnd'}, ...
         'OutputActions', {});
 
-    % Give water for subsequent licks on Port 1
     sma = AddState(sma, 'Name', 'GiveWater_Port1', ...
         'Timer', S.GUI.WaterValveTime, ...
         'StateChangeConditions', {'Tup', 'ResponsePeriod_Port1', 'GlobalTimer2_End', 'TrialEnd'}, ...
         'OutputActions', Port1WaterOutput);
 
     %% Response Period - Port 2
-    % Start response period timer for Port 2
     sma = AddState(sma, 'Name', 'ResponsePeriod_Port2_Start', ...
         'Timer', 0.001, ...
         'StateChangeConditions', {'Tup', 'GiveWater_Port2_First'}, ...
         'OutputActions', {'GlobalTimerTrig', '2'});
 
-    % Give water for the first lick that triggered response period
     sma = AddState(sma, 'Name', 'GiveWater_Port2_First', ...
         'Timer', S.GUI.WaterValveTime, ...
         'StateChangeConditions', {'Tup', 'ResponsePeriod_Port2', 'GlobalTimer2_End', 'TrialEnd'}, ...
         'OutputActions', Port2WaterOutput);
 
-    % Response period active - wait for more licks on Port 2
     sma = AddState(sma, 'Name', 'ResponsePeriod_Port2', ...
         'Timer', S.GUI.ResponsePeriodDuration, ...
         'StateChangeConditions', {'Port2In', 'GiveWater_Port2', ...
@@ -245,7 +268,6 @@ for currentTrial = 1:MaxTrials
                                  'Tup', 'TrialEnd'}, ...
         'OutputActions', {});
 
-    % Give water for subsequent licks on Port 2
     sma = AddState(sma, 'Name', 'GiveWater_Port2', ...
         'Timer', S.GUI.WaterValveTime, ...
         'StateChangeConditions', {'Tup', 'ResponsePeriod_Port2', 'GlobalTimer2_End', 'TrialEnd'}, ...
@@ -257,7 +279,7 @@ for currentTrial = 1:MaxTrials
         'StateChangeConditions', {'Tup', 'exit'}, ...
         'OutputActions', {'GlobalTimerCancel', '1'});
 
-    %% Send state machine to Bpod
+    %% Send state machine and run
     SendStateMachine(sma);
     RawEvents = RunStateMachine;
 
@@ -267,88 +289,79 @@ for currentTrial = 1:MaxTrials
         BpodSystem.Data.TrialSettings(currentTrial) = S;
 
         % Determine trial outcome
-        visited_states = {RawEvents.States};
+        all_states = fieldnames(RawEvents.States);
 
-        % Check if wait period was violated
-        if any(strcmp(visited_states, 'IncorrectLick'))
-            % Wait violated - add penalty
-            trial_outcome = 0;
-            penalty_time = min(S.GUI.MaxWaitTime, penalty_time + S.GUI.IncorrectLickPenalty);
-            response_port = 0;
-            num_licks = 0;
-            total_water = 0;
-            incorrect_licks = 1;
-
-            disp(['Trial ', num2str(currentTrial), ': Wait violated. Penalty = ', num2str(penalty_time), 's']);
-
-        elseif any(strcmp(visited_states, 'ResponsePeriod_Port1')) || ...
-               any(strcmp(visited_states, 'GiveWater_Port1_First'))
-            % Successful response on Port 1
-            trial_outcome = 1;
-            penalty_time = 0;  % Reset penalty after successful response
+        % Determine which port was chosen
+        if any(contains(all_states, 'ResponsePeriod_Port1'))
             response_port = 1;
-            incorrect_licks = 0;
+            trial_outcome = 1;
+        elseif any(contains(all_states, 'ResponsePeriod_Port2'))
+            response_port = 2;
+            trial_outcome = 1;
+        else
+            % Should not happen
+            response_port = 0;
+            trial_outcome = 0;
+        end
 
-            % Count licks during response period
+        % Count incorrect lick bursts (number of IgnoreBurst states visited)
+        ignore_burst_states = all_states(contains(all_states, 'IgnoreBurst'));
+        num_incorrect_bursts = length(ignore_burst_states);
+
+        % Calculate actual wait duration
+        if isfield(RawEvents.States, 'ReadyForResponse')
+            ready_time = RawEvents.States.ReadyForResponse(1);
+        else
+            ready_time = 0;
+        end
+
+        if response_port == 1 && isfield(RawEvents.States, 'ResponsePeriod_Port1_Start')
+            response_start = RawEvents.States.ResponsePeriod_Port1_Start(1);
+        elseif response_port == 2 && isfield(RawEvents.States, 'ResponsePeriod_Port2_Start')
+            response_start = RawEvents.States.ResponsePeriod_Port2_Start(1);
+        else
+            response_start = ready_time;
+        end
+
+        actual_wait = response_start - time_period; % Subtract bitcode time
+
+        % Count licks during response period
+        if response_port == 1
             if isfield(RawEvents.Events, 'Port1In')
                 lick_times = RawEvents.Events.Port1In;
-                % Find response period start time
-                if isfield(RawEvents.States, 'ResponsePeriod_Port1_Start')
-                    response_start = RawEvents.States.ResponsePeriod_Port1_Start(1);
-                    response_end = response_start + S.GUI.ResponsePeriodDuration;
-                    num_licks = sum(lick_times >= response_start & lick_times <= response_end);
-                else
-                    num_licks = length(lick_times);
-                end
+                response_start_time = RawEvents.States.ResponsePeriod_Port1_Start(1);
+                response_end_time = response_start_time + S.GUI.ResponsePeriodDuration;
+                num_licks = sum(lick_times >= response_start_time & lick_times <= response_end_time);
             else
-                num_licks = 1;  % At least one lick to trigger response
+                num_licks = 1;
             end
-
-            total_water = num_licks * S.GUI.WaterValveTime;
-            disp(['Trial ', num2str(currentTrial), ': Port 1 response. Licks = ', num2str(num_licks), ', Water = ', num2str(total_water), 's']);
-
-        elseif any(strcmp(visited_states, 'ResponsePeriod_Port2')) || ...
-               any(strcmp(visited_states, 'GiveWater_Port2_First'))
-            % Successful response on Port 2
-            trial_outcome = 1;
-            penalty_time = 0;  % Reset penalty after successful response
-            response_port = 2;
-            incorrect_licks = 0;
-
-            % Count licks during response period
+        elseif response_port == 2
             if isfield(RawEvents.Events, 'Port2In')
                 lick_times = RawEvents.Events.Port2In;
-                % Find response period start time
-                if isfield(RawEvents.States, 'ResponsePeriod_Port2_Start')
-                    response_start = RawEvents.States.ResponsePeriod_Port2_Start(1);
-                    response_end = response_start + S.GUI.ResponsePeriodDuration;
-                    num_licks = sum(lick_times >= response_start & lick_times <= response_end);
-                else
-                    num_licks = length(lick_times);
-                end
+                response_start_time = RawEvents.States.ResponsePeriod_Port2_Start(1);
+                response_end_time = response_start_time + S.GUI.ResponsePeriodDuration;
+                num_licks = sum(lick_times >= response_start_time & lick_times <= response_end_time);
             else
-                num_licks = 1;  % At least one lick to trigger response
+                num_licks = 1;
             end
-
-            total_water = num_licks * S.GUI.WaterValveTime;
-            disp(['Trial ', num2str(currentTrial), ': Port 2 response. Licks = ', num2str(num_licks), ', Water = ', num2str(total_water), 's']);
-
         else
-            % Edge case - no response (shouldn't happen with infinite wait)
-            trial_outcome = 0;
-            response_port = 0;
             num_licks = 0;
-            total_water = 0;
-            incorrect_licks = 0;
         end
+
+        total_water = num_licks * S.GUI.WaterValveTime;
 
         % Store trial data
         BpodSystem.Data.TrialOutcome(currentTrial) = trial_outcome;
         BpodSystem.Data.ResponsePort(currentTrial) = response_port;
+        BpodSystem.Data.ActualWaitDuration(currentTrial) = actual_wait;
         BpodSystem.Data.NumLicksInResponse(currentTrial) = num_licks;
         BpodSystem.Data.TotalWaterDelivered(currentTrial) = total_water;
-        BpodSystem.Data.IncorrectLicksDuringWait(currentTrial) = incorrect_licks;
-        BpodSystem.Data.TrialTypes(currentTrial) = response_port;  % 0=wait violated, 1=Port1, 2=Port2
+        BpodSystem.Data.NumIncorrectLickBursts(currentTrial) = num_incorrect_bursts;
+        BpodSystem.Data.TrialTypes(currentTrial) = response_port;
+
+        % Display trial summary
+        fprintf('Trial %d: Port %d | Wait: %.2fs | Incorrect bursts: %d | Licks: %d | Water: %.3fs\n', ...
+            currentTrial, response_port, actual_wait, num_incorrect_bursts, num_licks, total_water);
 
         % Update outcome plot
         LickTaskOutcomePlot(BpodSystem.GUIHandles.OutcomePlot, 'update', currentTrial, ...
@@ -377,10 +390,10 @@ function LickTaskOutcomePlot(AxesHandle, Action, varargin)
             % Initialize plot
             axes(AxesHandle);
             hold on;
-            set(AxesHandle, 'TickDir', 'out', 'YLim', [0, 3], 'YTick', [0.5, 1.5, 2.5], ...
-                'YTickLabel', {'Wait Violated', 'Port 1', 'Port 2'});
+            set(AxesHandle, 'TickDir', 'out', 'YLim', [0.5, 2.5], 'YTick', [1, 2], ...
+                'YTickLabel', {'Port 1', 'Port 2'});
             xlabel('Trial Number', 'FontSize', 12);
-            ylabel('Trial Outcome', 'FontSize', 12);
+            ylabel('Response Port', 'FontSize', 12);
             title('Lick-Triggered Task Performance', 'FontSize', 14);
 
         case 'update'
@@ -392,19 +405,12 @@ function LickTaskOutcomePlot(AxesHandle, Action, varargin)
             axes(AxesHandle);
 
             % Plot trial outcome
-            if trialTypes(currentTrial) == 0
-                % Wait violated
-                plot(currentTrial, 0.5, 'rx', 'MarkerSize', 10, 'LineWidth', 2);
-            elseif trialTypes(currentTrial) == 1
+            if trialTypes(currentTrial) == 1
                 % Port 1 response
-                if trialOutcomes(currentTrial) == 1
-                    plot(currentTrial, 1.5, 'go', 'MarkerSize', 8, 'LineWidth', 2);
-                end
+                plot(currentTrial, 1, 'go', 'MarkerSize', 8, 'LineWidth', 2);
             elseif trialTypes(currentTrial) == 2
                 % Port 2 response
-                if trialOutcomes(currentTrial) == 1
-                    plot(currentTrial, 2.5, 'bo', 'MarkerSize', 8, 'LineWidth', 2);
-                end
+                plot(currentTrial, 2, 'bo', 'MarkerSize', 8, 'LineWidth', 2);
             end
 
             % Update x-axis limits
