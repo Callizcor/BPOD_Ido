@@ -324,8 +324,8 @@ for currentTrial = 1:MaxTrials
         BpodSystem.Data = AddTrialEvents(BpodSystem.Data, RawEvents);
         BpodSystem.Data.TrialSettings(currentTrial) = S;
 
-        % Calculate trial outcome
-        [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(RawEvents, currentTrial);
+        % Calculate trial outcome - use converted data from BpodSystem.Data
+        [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(BpodSystem.Data.RawEvents.Trial{currentTrial}, currentTrial);
 
         BpodSystem.Data.Outcomes(currentTrial) = outcome;
         BpodSystem.Data.SelectedPort(currentTrial) = selectedPort;
