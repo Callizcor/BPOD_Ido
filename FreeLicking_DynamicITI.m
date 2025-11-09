@@ -39,14 +39,11 @@ if isempty(fieldnames(S))
 
     % Zaber motor parameters
     S.GUI.ZaberEnabled = 0;            % Enable Zaber motors (set to 1 if available)
-    S.GUI.ZaberPort = 'COM18';         % Serial port (COM18/COM6/COM11)
-    S.GUI.ZaberMotorZ = 1;             % Z-axis motor number
-    S.GUI.ZaberMotorLx = 3;            % Lx-axis motor number
-    S.GUI.ZaberMotorLy = 2;            % Ly-axis motor number
-    S.GUI.ZaberZ_Center = 210000;      % Z position for licking (microsteps)
-    S.GUI.ZaberZ_Retract = 60000;      % Z position retracted (microsteps)
-    S.GUI.ZaberLx_Center = 310000;     % Lx center position
-    S.GUI.ZaberLy_Center = 310000;     % Ly center position
+    S.GUI.ZaberPort = 'COM6';          % Serial port (COM18/COM6/COM11)
+    S.GUI.Z_motor_pos = 210000;        % Z position for licking (microsteps)
+    S.GUI.Z_NonLickable = 60000;       % Z position retracted (microsteps)
+    S.GUI.Lx_motor_pos = 310000;       % Lx center position
+    S.GUI.Ly_motor_pos = 310000;       % Ly center position
 end
 
 % Display parameters in GUI
@@ -66,18 +63,45 @@ BpodSystem.Data.Bitcode = {};
 BpodSystem.Data.Outcomes = []; % 1=correct, 0=error, -1=ignore
 
 %% Initialize Zaber Motors (if enabled)
+global motors motors_properties
+
 if S.GUI.ZaberEnabled
     try
-        % Initialize Zaber controller
-        global ZaberController;
-        ZaberController = ZaberTCD1000(S.GUI.ZaberPort);
+        % Motor properties configuration
+        motors_properties.PORT = S.GUI.ZaberPort;
+        motors_properties.type = '@ZaberArseny';
+        motors_properties.Z_motor_num = 2;   % COM6 setup
+        motors_properties.Lx_motor_num = 1;  % COM6 setup
+        motors_properties.Ly_motor_num = 4;  % COM6 setup
 
-        % Move to center positions
-        ZaberController.move(S.GUI.ZaberMotorZ, S.GUI.ZaberZ_Center);
-        ZaberController.move(S.GUI.ZaberMotorLx, S.GUI.ZaberLx_Center);
-        ZaberController.move(S.GUI.ZaberMotorLy, S.GUI.ZaberLy_Center);
+        % Set soft code handler for motor control
+        BpodSystem.SoftCodeHandlerFunction = 'MySoftCodeHandler';
+
+        % Open serial connection
+        motors = ZaberTCD1000(motors_properties.PORT);
+        serial_open(motors);
+
+        % Setup manual motor control callbacks
+        p = find(cellfun(@(x) strcmp(x,'Z_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
+        if ~isempty(p)
+            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Z_Move});
+            Z_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+        end
+
+        p = find(cellfun(@(x) strcmp(x,'Lx_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
+        if ~isempty(p)
+            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Lx_Move});
+            Lx_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+        end
+
+        p = find(cellfun(@(x) strcmp(x,'Ly_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
+        if ~isempty(p)
+            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Ly_Move});
+            Ly_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+        end
 
         disp('Zaber motors initialized and moved to center positions');
+
     catch ME
         warning('Failed to initialize Zaber motors: %s', ME.message);
         S.GUI.ZaberEnabled = 0;
@@ -138,7 +162,7 @@ for currentTrial = 1:MaxTrials
     % Store motor positions
     if S.GUI.ZaberEnabled
         BpodSystem.Data.MotorPositions(currentTrial, :) = [...
-            S.GUI.ZaberZ_Center, S.GUI.ZaberLx_Center, S.GUI.ZaberLy_Center];
+            S.GUI.Z_motor_pos, S.GUI.Lx_motor_pos, S.GUI.Ly_motor_pos];
     else
         BpodSystem.Data.MotorPositions(currentTrial, :) = [0, 0, 0];
     end
@@ -293,12 +317,16 @@ for currentTrial = 1:MaxTrials
 end
 
 %% Cleanup
-if S.GUI.ZaberEnabled && exist('ZaberController', 'var')
+global motors motors_properties
+
+if S.GUI.ZaberEnabled && exist('motors', 'var') && ~isempty(motors)
     try
         % Retract motors
-        ZaberController.move(S.GUI.ZaberMotorZ, S.GUI.ZaberZ_Retract);
-        delete(ZaberController);
-        clear global ZaberController;
+        Motor_Move(S.GUI.Z_NonLickable, motors_properties.Z_motor_num);
+
+        % Close serial connection
+        serial_close(motors);
+        clear global motors motors_properties;
         disp('Zaber motors retracted and connection closed');
     catch ME
         warning('Failed to cleanup Zaber motors: %s', ME.message);
@@ -408,26 +436,46 @@ function UpdateOnlinePlot(Data, currentTrial)
 end
 
 
-function SoftCodeHandler_PlayStimulus(code)
-    % Handle soft codes for Zaber motor control
-    global BpodSystem ZaberController
+%% Motor movement helper functions
 
-    S = BpodSystem.ProtocolSettings;
+function manual_Z_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Z_motor_num);
+end
 
-    if ~S.GUI.ZaberEnabled
-        return;
+function manual_Lx_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Lx_motor_num);
+end
+
+function manual_Ly_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Ly_motor_num);
+end
+
+function Z_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
     end
+    Motor_Move(position, motors_properties.Z_motor_num);
+end
 
-    try
-        switch code
-            case 1  % Move port IN (to lickable position)
-                ZaberController.move(S.GUI.ZaberMotorZ, S.GUI.ZaberZ_Center);
-            case 2  % Move port OUT (retracted)
-                ZaberController.move(S.GUI.ZaberMotorZ, S.GUI.ZaberZ_Retract);
-            otherwise
-                warning('Unknown soft code: %d', code);
-        end
-    catch ME
-        warning('Zaber motor control failed: %s', ME.message);
+function Lx_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
     end
+    Motor_Move(position, motors_properties.Lx_motor_num);
+end
+
+function Ly_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
+    end
+    Motor_Move(position, motors_properties.Ly_motor_num);
 end

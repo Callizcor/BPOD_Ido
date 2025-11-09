@@ -19,17 +19,17 @@ RigName = 'Microroom_Rig1';  % Change to your rig name
 ZaberPort = 'COM18';
 
 % Motor Assignments (varies by rig)
-% Example 1: Z=1, Lx=3, Ly=2
-% Example 2: Z=2, Lx=1, Ly=4
-ZaberMotorZ = 1;   % Z-axis (vertical)
-ZaberMotorLx = 3;  % Lx-axis (horizontal X)
-ZaberMotorLy = 2;  % Ly-axis (horizontal Y)
+% COM6 setup: Z=2, Lx=1, Ly=4
+% COM18 setup: Z=1, Lx=3, Ly=2
+Z_motor_num = 2;   % Z-axis (vertical)
+Lx_motor_num = 1;  % Lx-axis (horizontal X)
+Ly_motor_num = 4;  % Ly-axis (horizontal Y)
 
 % Position Calibration (in microsteps)
-ZaberZ_Center = 210000;      % Lickable position
-ZaberZ_Retract = 60000;      % Retracted position (safe, non-lickable)
-ZaberLx_Center = 310000;     % X center position
-ZaberLy_Center = 310000;     % Y center position
+Z_motor_pos = 210000;        % Lickable position
+Z_NonLickable = 60000;       % Retracted position (safe, non-lickable)
+Lx_motor_pos = 310000;       % X center position
+Ly_motor_pos = 310000;       % Y center position
 
 % Position range: 0-620,000 microsteps
 
@@ -88,13 +88,12 @@ ZaberEnabled = 1;             % 1=enabled, 0=disabled
 % % Zaber
 % S.GUI.ZaberEnabled = ZaberEnabled;
 % S.GUI.ZaberPort = ZaberPort;
-% S.GUI.ZaberMotorZ = ZaberMotorZ;
-% S.GUI.ZaberMotorLx = ZaberMotorLx;
-% S.GUI.ZaberMotorLy = ZaberMotorLy;
-% S.GUI.ZaberZ_Center = ZaberZ_Center;
-% S.GUI.ZaberZ_Retract = ZaberZ_Retract;
-% S.GUI.ZaberLx_Center = ZaberLx_Center;
-% S.GUI.ZaberLy_Center = ZaberLy_Center;
+% S.GUI.Z_motor_pos = Z_motor_pos;
+% S.GUI.Z_NonLickable = Z_NonLickable;
+% S.GUI.Lx_motor_pos = Lx_motor_pos;
+% S.GUI.Ly_motor_pos = Ly_motor_pos;
+%
+% % Note: Motor numbers are set in motors_properties, not in GUI
 %
 % BpodSystem.ProtocolSettings = S;
 
@@ -104,8 +103,8 @@ fprintf('\n=== RIG CONFIGURATION ===\n');
 fprintf('Rig Name: %s\n', RigName);
 fprintf('\nZaber Motors:\n');
 fprintf('  Port: %s\n', ZaberPort);
-fprintf('  Motor Assignments: Z=%d, Lx=%d, Ly=%d\n', ZaberMotorZ, ZaberMotorLx, ZaberMotorLy);
-fprintf('  Z Positions: Center=%d, Retract=%d\n', ZaberZ_Center, ZaberZ_Retract);
+fprintf('  Motor Assignments: Z=%d, Lx=%d, Ly=%d\n', Z_motor_num, Lx_motor_num, Ly_motor_num);
+fprintf('  Z Positions: Center=%d, Retract=%d\n', Z_motor_pos, Z_NonLickable);
 fprintf('\nTask Parameters:\n');
 fprintf('  Response Duration: %.1fs\n', ResponseDuration);
 fprintf('  Delay Duration: %.1fs\n', DelayDuration);

@@ -2,16 +2,15 @@ classdef ZaberTCD1000 < handle
     % ZABERTCD1000 Controller for Zaber TCD1000 motor system
     %
     % Usage:
-    %   zaber = ZaberTCD1000('COM18');
-    %   zaber.move(1, 210000);  % Move motor 1 to position 210000
-    %   zaber.home(1);          % Home motor 1
-    %   pos = zaber.getPosition(1);  % Get current position
-    %   delete(zaber);          % Close connection
+    %   motors = ZaberTCD1000('COM6');
+    %   serial_open(motors);
+    %   Motor_Move(210000, 2);  % Move motor 2 to position 210000
+    %   serial_close(motors);
     %
     % Motor Configuration:
-    %   Z-axis: Vertical positioning (motor 1, 2, etc.)
-    %   Lx-axis: Horizontal X positioning (motor 3, 1, etc.)
-    %   Ly-axis: Horizontal Y positioning (motor 2, 4, etc.)
+    %   Z-axis: Vertical positioning (motor 2 on COM6 setup)
+    %   Lx-axis: Horizontal X positioning (motor 1 on COM6 setup)
+    %   Ly-axis: Horizontal Y positioning (motor 4 on COM6 setup)
     %   Position range: 0-620,000 microsteps
     %
     % Common Positions:
@@ -20,7 +19,7 @@ classdef ZaberTCD1000 < handle
     %   Lx_center: ~310,000
     %   Ly_center: ~310,000
 
-    properties (Access = private)
+    properties (Access = public)
         SerialPort      % Serial port object
         PortName        % COM port name
         IsConnected     % Connection status
@@ -28,7 +27,7 @@ classdef ZaberTCD1000 < handle
 
     methods
         function obj = ZaberTCD1000(portName)
-            % Constructor - Initialize connection to Zaber controller
+            % Constructor - Store port name (connection done separately via serial_open)
             %
             % Inputs:
             %   portName - Serial port name (e.g., 'COM18', 'COM6', 'COM11')
@@ -39,22 +38,7 @@ classdef ZaberTCD1000 < handle
 
             obj.PortName = portName;
             obj.IsConnected = false;
-
-            try
-                % Create serial port object
-                obj.SerialPort = serialport(portName, 115200);
-                configureTerminator(obj.SerialPort, "CR/LF");
-
-                % Set timeouts
-                obj.SerialPort.Timeout = 2;
-
-                obj.IsConnected = true;
-                fprintf('Zaber controller connected on %s\n', portName);
-
-            catch ME
-                error('ZaberTCD1000:ConnectionFailed', ...
-                    'Failed to connect to %s: %s', portName, ME.message);
-            end
+            obj.SerialPort = [];
         end
 
         function delete(obj)

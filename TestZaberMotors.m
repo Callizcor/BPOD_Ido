@@ -22,11 +22,21 @@ TEST_POS_LX_CENTER = 310000;
 TEST_POS_LY_CENTER = 310000;
 
 %% Initialize Zaber Controller
+global motors motors_properties
+
 fprintf('=== ZABER MOTOR TEST ===\n\n');
 fprintf('Connecting to Zaber controller on %s...\n', COM_PORT);
 
+% Setup motor properties
+motors_properties.PORT = COM_PORT;
+motors_properties.type = '@ZaberArseny';
+motors_properties.Z_motor_num = MOTOR_Z;
+motors_properties.Lx_motor_num = MOTOR_LX;
+motors_properties.Ly_motor_num = MOTOR_LY;
+
 try
-    zaber = ZaberTCD1000(COM_PORT);
+    motors = ZaberTCD1000(COM_PORT);
+    serial_open(motors);
     fprintf('Connection successful!\n\n');
 catch ME
     fprintf('ERROR: Failed to connect to Zaber motors\n');
@@ -46,9 +56,9 @@ try
     % Test 1: Get current positions
     fprintf('TEST 1: Reading current positions\n');
     try
-        pos_z = zaber.getPosition(MOTOR_Z);
-        pos_lx = zaber.getPosition(MOTOR_LX);
-        pos_ly = zaber.getPosition(MOTOR_LY);
+        pos_z = motors.getPosition(MOTOR_Z);
+        pos_lx = motors.getPosition(MOTOR_LX);
+        pos_ly = motors.getPosition(MOTOR_LY);
         fprintf('  Z (motor %d): %d\n', MOTOR_Z, pos_z);
         fprintf('  Lx (motor %d): %d\n', MOTOR_LX, pos_lx);
         fprintf('  Ly (motor %d): %d\n', MOTOR_LY, pos_ly);
@@ -60,9 +70,9 @@ try
     % Test 2: Move Z-axis to center
     fprintf('TEST 2: Moving Z-axis to center position (%d)\n', TEST_POS_Z_CENTER);
     try
-        zaber.move(MOTOR_Z, TEST_POS_Z_CENTER);
+        Motor_Move(TEST_POS_Z_CENTER, MOTOR_Z);
         pause(2);  % Wait for movement
-        pos_z = zaber.getPosition(MOTOR_Z);
+        pos_z = motors.getPosition(MOTOR_Z);
         fprintf('  Current Z position: %d\n', pos_z);
         if abs(pos_z - TEST_POS_Z_CENTER) < 100
             fprintf('  PASSED\n\n');
@@ -76,9 +86,9 @@ try
     % Test 3: Move Z-axis to retract
     fprintf('TEST 3: Moving Z-axis to retract position (%d)\n', TEST_POS_Z_RETRACT);
     try
-        zaber.move(MOTOR_Z, TEST_POS_Z_RETRACT);
+        Motor_Move(TEST_POS_Z_RETRACT, MOTOR_Z);
         pause(2);  % Wait for movement
-        pos_z = zaber.getPosition(MOTOR_Z);
+        pos_z = motors.getPosition(MOTOR_Z);
         fprintf('  Current Z position: %d\n', pos_z);
         if abs(pos_z - TEST_POS_Z_RETRACT) < 100
             fprintf('  PASSED\n\n');
@@ -92,7 +102,7 @@ try
     % Test 4: Move Z back to center
     fprintf('TEST 4: Moving Z-axis back to center\n');
     try
-        zaber.move(MOTOR_Z, TEST_POS_Z_CENTER);
+        Motor_Move(TEST_POS_Z_CENTER, MOTOR_Z);
         pause(2);
         fprintf('  PASSED\n\n');
     catch ME
@@ -102,11 +112,11 @@ try
     % Test 5: Move horizontal axes to center
     fprintf('TEST 5: Moving horizontal axes to center\n');
     try
-        zaber.move(MOTOR_LX, TEST_POS_LX_CENTER);
-        zaber.move(MOTOR_LY, TEST_POS_LY_CENTER);
+        Motor_Move(TEST_POS_LX_CENTER, MOTOR_LX);
+        Motor_Move(TEST_POS_LY_CENTER, MOTOR_LY);
         pause(3);  % Wait for movement
-        pos_lx = zaber.getPosition(MOTOR_LX);
-        pos_ly = zaber.getPosition(MOTOR_LY);
+        pos_lx = motors.getPosition(MOTOR_LX);
+        pos_ly = motors.getPosition(MOTOR_LY);
         fprintf('  Lx position: %d (target: %d)\n', pos_lx, TEST_POS_LX_CENTER);
         fprintf('  Ly position: %d (target: %d)\n', pos_ly, TEST_POS_LY_CENTER);
         fprintf('  PASSED\n\n');
@@ -117,9 +127,9 @@ try
     % Test 6: Emergency stop
     fprintf('TEST 6: Testing emergency stop\n');
     try
-        zaber.move(MOTOR_Z, TEST_POS_Z_RETRACT);
+        Motor_Move(TEST_POS_Z_RETRACT, MOTOR_Z);
         pause(0.5);
-        zaber.stop(MOTOR_Z);
+        motors.stop(MOTOR_Z);
         fprintf('  PASSED\n\n');
     catch ME
         fprintf('  FAILED: %s\n\n', ME.message);
@@ -135,11 +145,12 @@ end
 fprintf('Cleaning up...\n');
 try
     % Move Z to safe retract position
-    zaber.move(MOTOR_Z, TEST_POS_Z_RETRACT);
+    Motor_Move(TEST_POS_Z_RETRACT, MOTOR_Z);
     pause(2);
 
     % Close connection
-    delete(zaber);
+    serial_close(motors);
+    clear global motors motors_properties;
     fprintf('Zaber motors disconnected\n');
 catch ME
     fprintf('Cleanup error: %s\n', ME.message);
