@@ -396,12 +396,37 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
     % Calculate trial outcome based on terminal state
     % outcome: 1=correct, 0=error, -1=ignore
 
-    % Determine which port was selected
+    % Debug: Print all state names that were entered
+    if currentTrial <= 3  % Only for first 3 trials
+        fprintf('  DEBUG: States entered = %s\n', strjoin(fieldnames(RawEvents.States), ', '));
+    end
+
+    % Determine which port was selected - check multiple possible states
     selectedPort = 0;
+
+    % First, try to detect from StartResponse states
     if isfield(RawEvents.States, 'StartResponsePort1') && ~isnan(RawEvents.States.StartResponsePort1(1))
         selectedPort = 1;
     elseif isfield(RawEvents.States, 'StartResponsePort2') && ~isnan(RawEvents.States.StartResponsePort2(1))
         selectedPort = 2;
+    end
+
+    % Fallback: check ResponsePort states
+    if selectedPort == 0
+        if isfield(RawEvents.States, 'ResponsePort1') && ~isnan(RawEvents.States.ResponsePort1(1))
+            selectedPort = 1;
+        elseif isfield(RawEvents.States, 'ResponsePort2') && ~isnan(RawEvents.States.ResponsePort2(1))
+            selectedPort = 2;
+        end
+    end
+
+    % Last resort: check from events (which port had licks)
+    if selectedPort == 0 && isfield(RawEvents, 'Events')
+        if isfield(RawEvents.Events, 'Port1Out') && ~isempty(RawEvents.Events.Port1Out)
+            selectedPort = 1;
+        elseif isfield(RawEvents.Events, 'Port2Out') && ~isempty(RawEvents.Events.Port2Out)
+            selectedPort = 2;
+        end
     end
 
     % Check terminal state for outcome
@@ -411,6 +436,12 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
         outcome = -1; % Ignored trial
     else
         outcome = 0; % Error trial
+        % Debug output for first few trials
+        if currentTrial <= 3
+            fprintf('  DEBUG: No terminal state found. RewardConsumption exists: %d, IgnoreTrial exists: %d\n', ...
+                isfield(RawEvents.States, 'RewardConsumption'), ...
+                isfield(RawEvents.States, 'IgnoreTrial'));
+        end
     end
 
     % Count response licks (rewards delivered)
