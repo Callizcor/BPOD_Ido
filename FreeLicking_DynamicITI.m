@@ -396,27 +396,35 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
     % Calculate trial outcome based on terminal state
     % outcome: 1=correct, 0=error, -1=ignore
 
-    % Debug: Print all state names that were entered
-    if currentTrial <= 3  % Only for first 3 trials
-        fprintf('  DEBUG: States entered = %s\n', strjoin(fieldnames(RawEvents.States), ', '));
+    % Check if States is a struct (sometimes it's just a number if no states entered)
+    if currentTrial <= 3
+        if isstruct(RawEvents.States)
+            stateNames = fieldnames(RawEvents.States);
+            fprintf('  DEBUG: States entered = %s\n', strjoin(stateNames, ', '));
+        else
+            fprintf('  DEBUG: States is not a struct! Type = %s, Value = %s\n', ...
+                class(RawEvents.States), mat2str(RawEvents.States));
+        end
     end
 
     % Determine which port was selected - check multiple possible states
     selectedPort = 0;
 
     % First, try to detect from StartResponse states
-    if isfield(RawEvents.States, 'StartResponsePort1') && ~isnan(RawEvents.States.StartResponsePort1(1))
-        selectedPort = 1;
-    elseif isfield(RawEvents.States, 'StartResponsePort2') && ~isnan(RawEvents.States.StartResponsePort2(1))
-        selectedPort = 2;
-    end
-
-    % Fallback: check ResponsePort states
-    if selectedPort == 0
-        if isfield(RawEvents.States, 'ResponsePort1') && ~isnan(RawEvents.States.ResponsePort1(1))
+    if isstruct(RawEvents.States)
+        if isfield(RawEvents.States, 'StartResponsePort1') && ~isnan(RawEvents.States.StartResponsePort1(1))
             selectedPort = 1;
-        elseif isfield(RawEvents.States, 'ResponsePort2') && ~isnan(RawEvents.States.ResponsePort2(1))
+        elseif isfield(RawEvents.States, 'StartResponsePort2') && ~isnan(RawEvents.States.StartResponsePort2(1))
             selectedPort = 2;
+        end
+
+        % Fallback: check ResponsePort states
+        if selectedPort == 0
+            if isfield(RawEvents.States, 'ResponsePort1') && ~isnan(RawEvents.States.ResponsePort1(1))
+                selectedPort = 1;
+            elseif isfield(RawEvents.States, 'ResponsePort2') && ~isnan(RawEvents.States.ResponsePort2(1))
+                selectedPort = 2;
+            end
         end
     end
 
@@ -430,36 +438,46 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
     end
 
     % Check terminal state for outcome
-    if isfield(RawEvents.States, 'RewardConsumption') && ~isnan(RawEvents.States.RewardConsumption(1))
-        outcome = 1; % Correct trial
-    elseif isfield(RawEvents.States, 'IgnoreTrial') && ~isnan(RawEvents.States.IgnoreTrial(1))
-        outcome = -1; % Ignored trial
+    outcome = 0; % Default to error
+    if isstruct(RawEvents.States)
+        if isfield(RawEvents.States, 'RewardConsumption') && ~isnan(RawEvents.States.RewardConsumption(1))
+            outcome = 1; % Correct trial
+        elseif isfield(RawEvents.States, 'IgnoreTrial') && ~isnan(RawEvents.States.IgnoreTrial(1))
+            outcome = -1; % Ignored trial
+        else
+            % Debug output for first few trials
+            if currentTrial <= 3
+                fprintf('  DEBUG: No terminal state found. RewardConsumption exists: %d, IgnoreTrial exists: %d\n', ...
+                    isfield(RawEvents.States, 'RewardConsumption'), ...
+                    isfield(RawEvents.States, 'IgnoreTrial'));
+            end
+        end
     else
-        outcome = 0; % Error trial
-        % Debug output for first few trials
         if currentTrial <= 3
-            fprintf('  DEBUG: No terminal state found. RewardConsumption exists: %d, IgnoreTrial exists: %d\n', ...
-                isfield(RawEvents.States, 'RewardConsumption'), ...
-                isfield(RawEvents.States, 'IgnoreTrial'));
+            fprintf('  DEBUG: States is not a struct - cannot check terminal states\n');
         end
     end
 
     % Count response licks (rewards delivered)
     responseLicks = 0;
-    if selectedPort == 1
-        if isfield(RawEvents.States, 'RewardPort1')
-            responseLicks = sum(~isnan(RawEvents.States.RewardPort1(:, 1)));
+    if isstruct(RawEvents.States)
+        if selectedPort == 1
+            if isfield(RawEvents.States, 'RewardPort1')
+                responseLicks = sum(~isnan(RawEvents.States.RewardPort1(:, 1)));
+            end
+        elseif selectedPort == 2
+            if isfield(RawEvents.States, 'RewardPort2')
+                responseLicks = sum(~isnan(RawEvents.States.RewardPort2(:, 1)));
+            end
         end
-    elseif selectedPort == 2
-        if isfield(RawEvents.States, 'RewardPort2')
-            responseLicks = sum(~isnan(RawEvents.States.RewardPort2(:, 1)));
-        end
-    end
 
-    % Count burst windows (delay resets)
-    burstCount = 0;
-    if isfield(RawEvents.States, 'BurstWindow')
-        burstCount = sum(~isnan(RawEvents.States.BurstWindow(:, 1)));
+        % Count burst windows (delay resets)
+        burstCount = 0;
+        if isfield(RawEvents.States, 'BurstWindow')
+            burstCount = sum(~isnan(RawEvents.States.BurstWindow(:, 1)));
+        end
+    else
+        burstCount = 0;
     end
 end
 
