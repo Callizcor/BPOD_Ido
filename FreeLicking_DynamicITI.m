@@ -61,6 +61,8 @@ BpodSystem.Data.TrialRewardSize = [];
 BpodSystem.Data.MotorPositions = [];
 BpodSystem.Data.Bitcode = {};
 BpodSystem.Data.Outcomes = []; % 1=correct, 0=error, -1=ignore
+BpodSystem.Data.TotalWaterDispensed = 0; % Track total water (mL)
+BpodSystem.Data.LickHistory = []; % Store all licks with timestamps and states
 
 %% Initialize Zaber Motors (if enabled)
 global motors motors_properties
@@ -85,19 +87,19 @@ if S.GUI.ZaberEnabled
         p = find(cellfun(@(x) strcmp(x,'Z_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         if ~isempty(p)
             set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Z_Move});
-            Z_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+            Motor_Move(str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String')), motors_properties.Z_motor_num);
         end
 
         p = find(cellfun(@(x) strcmp(x,'Lx_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         if ~isempty(p)
             set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Lx_Move});
-            Lx_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+            Motor_Move(str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String')), motors_properties.Lx_motor_num);
         end
 
         p = find(cellfun(@(x) strcmp(x,'Ly_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         if ~isempty(p)
             set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Ly_Move});
-            Ly_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
+            Motor_Move(str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String')), motors_properties.Ly_motor_num);
         end
 
         disp('Zaber motors initialized and moved to center positions');
@@ -108,6 +110,22 @@ if S.GUI.ZaberEnabled
         S.GUI.ZaberEnabled = 0;
     end
 end
+
+%% Nested motor movement functions (must be defined here to access motors_properties)
+    function manual_Z_Move(hObject, ~)
+        position = str2double(get(hObject, 'String'));
+        Motor_Move(position, motors_properties.Z_motor_num);
+    end
+
+    function manual_Lx_Move(hObject, ~)
+        position = str2double(get(hObject, 'String'));
+        Motor_Move(position, motors_properties.Lx_motor_num);
+    end
+
+    function manual_Ly_Move(hObject, ~)
+        position = str2double(get(hObject, 'String'));
+        Motor_Move(position, motors_properties.Ly_motor_num);
+    end
 
 %% Session Initialization - Deliver water to both ports
 disp('=== SESSION INITIALIZATION ===');
@@ -125,6 +143,7 @@ sma = AddState(sma, 'Name', 'WaitPeriod1', ...
     'OutputActions', {});
 SendStateMachine(sma);
 RawEvents = RunStateMachine();
+BpodSystem.Data.TotalWaterDispensed = BpodSystem.Data.TotalWaterDispensed + S.GUI.InitRewardSize;
 
 % Port 2 initialization
 sma = NewStateMachine();
@@ -138,8 +157,9 @@ sma = AddState(sma, 'Name', 'WaitPeriod2', ...
     'OutputActions', {});
 SendStateMachine(sma);
 RawEvents = RunStateMachine();
+BpodSystem.Data.TotalWaterDispensed = BpodSystem.Data.TotalWaterDispensed + S.GUI.InitRewardSize;
 
-disp('Session initialization complete. Ready for trials.');
+fprintf('Session initialization complete. Initial water: %.3f mL\n', BpodSystem.Data.TotalWaterDispensed * 1000);
 
 %% Main Trial Loop
 for currentTrial = 1:MaxTrials
@@ -324,8 +344,8 @@ for currentTrial = 1:MaxTrials
         BpodSystem.Data = AddTrialEvents(BpodSystem.Data, RawEvents);
         BpodSystem.Data.TrialSettings(currentTrial) = S;
 
-        % Calculate trial outcome - use converted data from BpodSystem.Data
-        [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(BpodSystem.Data.RawEvents.Trial{currentTrial}, currentTrial);
+        % Calculate trial outcome and extract lick history
+        [outcome, selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialOutcome(BpodSystem.Data.RawEvents.Trial{currentTrial}, currentTrial);
 
         BpodSystem.Data.Outcomes(currentTrial) = outcome;
         BpodSystem.Data.SelectedPort(currentTrial) = selectedPort;
@@ -334,13 +354,20 @@ for currentTrial = 1:MaxTrials
         BpodSystem.Data.DelayTimerResets(currentTrial) = burstCount;
         BpodSystem.Data.TrialEndTime(currentTrial) = now();
 
+        % Update total water dispensed (rewards + initial water already counted)
+        waterThisTrial = responseLicks * S.GUI.RewardSize;
+        BpodSystem.Data.TotalWaterDispensed = BpodSystem.Data.TotalWaterDispensed + waterThisTrial;
+
+        % Append lick history
+        BpodSystem.Data.LickHistory = [BpodSystem.Data.LickHistory; lickHistory];
+
         % Update online plots
-        UpdateOnlinePlot(BpodSystem.Data, currentTrial);
+        UpdateOnlinePlot(BpodSystem.Data, currentTrial, S);
 
         % Save data
         SaveBpodSessionData;
 
-        % Display trial information with delay progress
+        % Display trial information with delay progress and water
         fprintf('Trial %d: ', currentTrial);
         if outcome == 1
             fprintf('CORRECT | ');
@@ -349,8 +376,8 @@ for currentTrial = 1:MaxTrials
         else
             fprintf('IGNORE | ');
         end
-        fprintf('Port %d | Rewards: %d | Delay resets: %d', ...
-            selectedPort, responseLicks, burstCount);
+        fprintf('Port %d | Rewards: %d | Delay resets: %d | Water: %.2f µL | Total: %.2f mL', ...
+            selectedPort, responseLicks, burstCount, waterThisTrial * 1000000, BpodSystem.Data.TotalWaterDispensed * 1000);
 
         % Show delay period progress
         if outcome == 1 && burstCount == 0
@@ -392,9 +419,13 @@ end % Main function
 
 %% HELPER FUNCTIONS
 
-function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(RawEvents, currentTrial)
+function [outcome, selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialOutcome(RawEvents, currentTrial)
     % Calculate trial outcome based on terminal state
     % outcome: 1=correct, 0=error, -1=ignore
+    % lickHistory: array with columns [timestamp, port, trialNum, stateNum, stateName]
+
+    % Initialize lick history
+    lickHistory = [];
 
     % Check if States is a struct (sometimes it's just a number if no states entered)
     if currentTrial <= 3
@@ -479,23 +510,89 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
     else
         burstCount = 0;
     end
+
+    % Extract lick history (timestamp, port, trial, state)
+    % Process all Port1Out and Port2Out events
+    if isfield(RawEvents, 'Events')
+        allLicks = [];
+
+        % Collect Port 1 licks
+        if isfield(RawEvents.Events, 'Port1Out') && ~isempty(RawEvents.Events.Port1Out)
+            port1Licks = RawEvents.Events.Port1Out(:);
+            for i = 1:length(port1Licks)
+                allLicks = [allLicks; port1Licks(i), 1]; % [timestamp, port]
+            end
+        end
+
+        % Collect Port 2 licks
+        if isfield(RawEvents.Events, 'Port2Out') && ~isempty(RawEvents.Events.Port2Out)
+            port2Licks = RawEvents.Events.Port2Out(:);
+            for i = 1:length(port2Licks)
+                allLicks = [allLicks; port2Licks(i), 2]; % [timestamp, port]
+            end
+        end
+
+        % Sort licks by timestamp
+        if ~isempty(allLicks)
+            [~, sortIdx] = sort(allLicks(:, 1));
+            allLicks = allLicks(sortIdx, :);
+
+            % Determine state for each lick
+            if isstruct(RawEvents.States)
+                stateNames = fieldnames(RawEvents.States);
+                for lickIdx = 1:size(allLicks, 1)
+                    lickTime = allLicks(lickIdx, 1);
+                    portNum = allLicks(lickIdx, 2);
+
+                    % Find which state the lick occurred in
+                    currentStateName = 'Unknown';
+                    for stateIdx = 1:length(stateNames)
+                        stateName = stateNames{stateIdx};
+                        stateTimes = RawEvents.States.(stateName);
+
+                        % Check each entry of this state
+                        for entryIdx = 1:size(stateTimes, 1)
+                            if ~isnan(stateTimes(entryIdx, 1)) && ~isnan(stateTimes(entryIdx, 2))
+                                stateStart = stateTimes(entryIdx, 1);
+                                stateEnd = stateTimes(entryIdx, 2);
+
+                                if lickTime >= stateStart && lickTime <= stateEnd
+                                    currentStateName = stateName;
+                                    break;
+                                end
+                            end
+                        end
+
+                        if ~strcmp(currentStateName, 'Unknown')
+                            break;
+                        end
+                    end
+
+                    % Add to lick history: [timestamp, port, trial, stateName]
+                    % Store as a cell array row: {timestamp, port, trial, stateName}
+                    lickHistory = [lickHistory; {lickTime, portNum, currentTrial, currentStateName}];
+                end
+            end
+        end
+    end
 end
 
 
-function UpdateOnlinePlot(Data, currentTrial)
-    % Update online visualization of trial outcomes
+function UpdateOnlinePlot(Data, currentTrial, S)
+    % Update online visualization of trial outcomes and lick history
 
     global BpodSystem
 
     if currentTrial == 1
-        % Initialize figure
-        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Trial Outcomes', 'NumberTitle', 'off');
+        % Initialize figure with larger size for additional plots
+        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Session Monitor', ...
+            'NumberTitle', 'off', 'Position', [100 100 1400 900]);
     end
 
     figure(BpodSystem.ProtocolFigures.OutcomePlot);
 
     % Plot trial outcomes
-    subplot(2,2,1);
+    subplot(3,2,1);
     outcomes = Data.Outcomes(1:currentTrial);
     plot(1:currentTrial, outcomes, 'o-');
     xlabel('Trial Number');
@@ -507,7 +604,7 @@ function UpdateOnlinePlot(Data, currentTrial)
     grid on;
 
     % Plot port selection
-    subplot(2,2,2);
+    subplot(3,2,2);
     portSelection = Data.SelectedPort(1:currentTrial);
     histogram(portSelection, [0.5 1.5 2.5]);
     xlabel('Selected Port');
@@ -516,7 +613,7 @@ function UpdateOnlinePlot(Data, currentTrial)
     xticks([1 2]);
 
     % Plot response licks
-    subplot(2,2,3);
+    subplot(3,2,3);
     responseLicks = Data.ResponseLickCount(1:currentTrial);
     plot(1:currentTrial, responseLicks, 'o-');
     xlabel('Trial Number');
@@ -525,7 +622,7 @@ function UpdateOnlinePlot(Data, currentTrial)
     grid on;
 
     % Plot delay resets
-    subplot(2,2,4);
+    subplot(3,2,4);
     delayResets = Data.DelayTimerResets(1:currentTrial);
     plot(1:currentTrial, delayResets, 'o-');
     xlabel('Trial Number');
@@ -533,50 +630,86 @@ function UpdateOnlinePlot(Data, currentTrial)
     title('Delay Timer Resets per Trial');
     grid on;
 
+    % Plot total water consumption over time
+    subplot(3,2,5);
+    totalWater_mL = Data.TotalWaterDispensed * 1000; % Convert to mL
+    bar(1, totalWater_mL, 'FaceColor', [0.2 0.6 0.8]);
+    ylabel('Water (mL)');
+    title(sprintf('Total Water Dispensed: %.2f mL', totalWater_mL));
+    xlim([0.5 1.5]);
+    set(gca, 'XTick', []);
+    grid on;
+
+    % Plot lick burst history (last 20 seconds)
+    subplot(3,2,6);
+    cla; % Clear previous plot
+    hold on;
+
+    if ~isempty(Data.LickHistory)
+        % Get current time (time of last lick or trial end)
+        if iscell(Data.LickHistory)
+            allTimes = cell2mat(Data.LickHistory(:, 1));
+            currentTime = max(allTimes);
+        else
+            currentTime = 0;
+        end
+
+        % Define 20-second window
+        timeWindow = 20; % seconds
+        windowStart = max(0, currentTime - timeWindow);
+
+        % Filter licks in the time window
+        if iscell(Data.LickHistory)
+            lickTimes = cell2mat(Data.LickHistory(:, 1));
+            lickPorts = cell2mat(Data.LickHistory(:, 2));
+            lickStates = Data.LickHistory(:, 4);
+
+            % Find licks in window
+            inWindow = lickTimes >= windowStart;
+            windowTimes = lickTimes(inWindow);
+            windowPorts = lickPorts(inWindow);
+            windowStates = lickStates(inWindow);
+
+            % Plot licks
+            for i = 1:length(windowTimes)
+                relTime = windowTimes(i) - windowStart; % Time relative to window start
+                port = windowPorts(i);
+                state = windowStates{i};
+
+                % Determine color based on state
+                if contains(state, 'Response') || contains(state, 'Reward')
+                    color = [0.2 0.8 0.2]; % Green for response/reward
+                elseif contains(state, 'Delay')
+                    color = [0.8 0.2 0.2]; % Red for delay (incorrect)
+                elseif contains(state, 'Burst')
+                    color = [0.8 0.5 0.2]; % Orange for burst window
+                else
+                    color = [0.5 0.5 0.5]; % Gray for other
+                end
+
+                % Plot as vertical line at different heights for different ports
+                yPos = port; % Port 1 at y=1, Port 2 at y=2
+                plot([relTime relTime], [yPos-0.3 yPos+0.3], 'LineWidth', 2, 'Color', color);
+
+                % Add state label for first few licks (avoid clutter)
+                if i <= 5
+                    text(relTime, yPos+0.4, strrep(state, '_', '\_'), ...
+                        'FontSize', 6, 'Rotation', 45, 'Interpreter', 'tex');
+                end
+            end
+        end
+
+        ylim([0.5 2.5]);
+        yticks([1 2]);
+        yticklabels({'Port 1', 'Port 2'});
+    end
+
+    xlim([0 timeWindow]);
+    xlabel('Time (s, last 20s)');
+    ylabel('Lick Port');
+    title('Lick Burst History (20s window)');
+    grid on;
+    hold off;
+
     drawnow;
-end
-
-
-%% Motor movement helper functions
-
-function manual_Z_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Z_motor_num);
-end
-
-function manual_Lx_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Lx_motor_num);
-end
-
-function manual_Ly_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Ly_motor_num);
-end
-
-function Z_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Z_motor_num);
-end
-
-function Lx_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Lx_motor_num);
-end
-
-function Ly_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Ly_motor_num);
 end
