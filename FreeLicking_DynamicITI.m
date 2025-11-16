@@ -66,39 +66,55 @@ BpodSystem.Data.LickHistory = []; % Store all licks with timestamps and states
 %% Initialize Zaber Motors (if enabled)
 global motors motors_properties
 
+fprintf('\n=== MOTOR INITIALIZATION ===\n');
+fprintf('ZaberEnabled = %d (0=disabled, 1=enabled)\n', S.GUI.ZaberEnabled);
+fprintf('ZaberPort = %s\n', S.GUI.ZaberPort);
+
 if S.GUI.ZaberEnabled
     try
+        fprintf('Initializing Zaber motors...\n');
+
         % Motor properties configuration
         motors_properties.PORT = S.GUI.ZaberPort;
         motors_properties.type = '@ZaberArseny';
         motors_properties.Z_motor_num = 2;   % COM6 setup
         motors_properties.Lx_motor_num = 1;  % COM6 setup
         motors_properties.Ly_motor_num = 4;  % COM6 setup
+        fprintf('Motor properties configured.\n');
 
         % Set soft code handler for motor control
         BpodSystem.SoftCodeHandlerFunction = 'MySoftCodeHandler';
+        fprintf('SoftCodeHandler set.\n');
 
         % Open serial connection
+        fprintf('Creating ZaberTCD1000 object on %s...\n', motors_properties.PORT);
         motors = ZaberTCD1000(motors_properties.PORT);
+        fprintf('Opening serial connection...\n');
         serial_open(motors);
+        fprintf('Serial connection opened.\n');
 
         % Setup manual motor control callbacks
+        fprintf('Setting up motor control callbacks...\n');
         p = find(cellfun(@(x) strcmp(x,'Z_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Z_Move});
+        fprintf('Moving Z motor to initial position: %s\n', get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
         Z_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
         p = find(cellfun(@(x) strcmp(x,'Lx_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Lx_Move});
+        fprintf('Moving Lx motor to initial position: %s\n', get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
         Lx_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
         p = find(cellfun(@(x) strcmp(x,'Ly_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
         set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Ly_Move});
+        fprintf('Moving Ly motor to initial position: %s\n', get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
         Ly_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
-        disp('Zaber motors initialized and moved to initial positions');
+        fprintf('\n');
         disp('=======================================================');
         disp('MOTOR POSITIONING MODE');
         disp('=======================================================');
+        disp('Motors successfully initialized and moved to initial positions.');
         disp('Adjust motor positions using the GUI parameters:');
         disp('  - Z_motor_pos: Vertical position');
         disp('  - Lx_motor_pos: Horizontal X position');
@@ -110,10 +126,23 @@ if S.GUI.ZaberEnabled
         disp(' ');
 
     catch ME
-        warning('Failed to initialize Zaber motors: %s', ME.message);
+        fprintf('\n!!! MOTOR INITIALIZATION FAILED !!!\n');
+        fprintf('Error: %s\n', ME.message);
+        fprintf('Error occurred in: %s (line %d)\n', ME.stack(1).name, ME.stack(1).line);
+        fprintf('\nFull error details:\n');
+        disp(ME);
+        fprintf('\nStack trace:\n');
+        for i = 1:length(ME.stack)
+            fprintf('  %d: %s (line %d) in %s\n', i, ME.stack(i).name, ME.stack(i).line, ME.stack(i).file);
+        end
+        fprintf('\nMotors will be DISABLED for this session.\n');
         S.GUI.ZaberEnabled = 0;
     end
+else
+    fprintf('Motors are DISABLED (ZaberEnabled = 0).\n');
+    fprintf('To enable motors, set S.GUI.ZaberEnabled = 1 in the GUI.\n');
 end
+fprintf('=== MOTOR INITIALIZATION COMPLETE ===\n\n');
 
 %% Session Initialization - Deliver water to both ports
 disp('=== SESSION INITIALIZATION ===');
@@ -669,34 +698,46 @@ end
 %% Motor movement functions
 
 function manual_Z_Move(hObject, ~)
-%global motors_properties;
+global motors_properties;
 position = str2double(get(hObject, 'String'));
+fprintf('[manual_Z_Move] Moving Z motor to position: %d (motor #%d)\n', position, motors_properties.Z_motor_num);
 Motor_Move(position, motors_properties.Z_motor_num);
+fprintf('[manual_Z_Move] Motor_Move completed.\n');
 end
 
 function manual_Lx_Move(hObject, ~)
-%global motors_properties;
+global motors_properties;
 position = str2double(get(hObject, 'String'));
+fprintf('[manual_Lx_Move] Moving Lx motor to position: %d (motor #%d)\n', position, motors_properties.Lx_motor_num);
 Motor_Move(position, motors_properties.Lx_motor_num);
+fprintf('[manual_Lx_Move] Motor_Move completed.\n');
 end
 
 function manual_Ly_Move(hObject, ~)
-%global motors_properties;
+global motors_properties;
 position = str2double(get(hObject, 'String'));
+fprintf('[manual_Ly_Move] Moving Ly motor to position: %d (motor #%d)\n', position, motors_properties.Ly_motor_num);
 Motor_Move(position, motors_properties.Ly_motor_num);
+fprintf('[manual_Ly_Move] Motor_Move completed.\n');
 end
 
 function Z_Move(position)
-%global motors_properties;
+global motors_properties;
+fprintf('[Z_Move] Called with position: %s (motor #%d)\n', num2str(position), motors_properties.Z_motor_num);
 Motor_Move(position, motors_properties.Z_motor_num);
+fprintf('[Z_Move] Motor_Move completed.\n');
 end
 
 function Lx_Move(position)
-%global motors_properties;
+global motors_properties;
+fprintf('[Lx_Move] Called with position: %s (motor #%d)\n', num2str(position), motors_properties.Lx_motor_num);
 Motor_Move(position, motors_properties.Lx_motor_num);
+fprintf('[Lx_Move] Motor_Move completed.\n');
 end
 
 function Ly_Move(position)
-%global motors_properties;
+global motors_properties;
+fprintf('[Ly_Move] Called with position: %s (motor #%d)\n', num2str(position), motors_properties.Ly_motor_num);
 Motor_Move(position, motors_properties.Ly_motor_num);
+fprintf('[Ly_Move] Motor_Move completed.\n');
 end
