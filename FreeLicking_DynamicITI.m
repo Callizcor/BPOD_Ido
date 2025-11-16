@@ -60,7 +60,6 @@ BpodSystem.Data.TrialEndTime = [];
 BpodSystem.Data.TrialRewardSize = [];
 BpodSystem.Data.MotorPositions = [];
 BpodSystem.Data.Bitcode = {};
-BpodSystem.Data.Outcomes = []; % 1=correct, 0=error, -1=ignore
 BpodSystem.Data.TotalWaterDispensed = 0; % Track total water (mL)
 BpodSystem.Data.LickHistory = []; % Store all licks with timestamps and states
 
@@ -321,10 +320,9 @@ for currentTrial = 1:MaxTrials
         BpodSystem.Data = AddTrialEvents(BpodSystem.Data, RawEvents);
         BpodSystem.Data.TrialSettings(currentTrial) = S;
 
-        % Calculate trial outcome and extract lick history
-        [outcome, selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialOutcome(BpodSystem.Data.RawEvents.Trial{currentTrial}, currentTrial);
+        % Extract trial data and lick history
+        [selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialData(BpodSystem.Data.RawEvents.Trial{currentTrial}, currentTrial);
 
-        BpodSystem.Data.Outcomes(currentTrial) = outcome;
         BpodSystem.Data.SelectedPort(currentTrial) = selectedPort;
         BpodSystem.Data.ResponseLickCount(currentTrial) = responseLicks;
         BpodSystem.Data.IncorrectLickBursts(currentTrial) = burstCount;
@@ -344,22 +342,14 @@ for currentTrial = 1:MaxTrials
         % Save data
         SaveBpodSessionData;
 
-        % Display trial information with delay progress and water
-        fprintf('Trial %d: ', currentTrial);
-        if outcome == 1
-            fprintf('CORRECT | ');
-        elseif outcome == 0
-            fprintf('ERROR | ');
-        else
-            fprintf('IGNORE | ');
-        end
-        fprintf('Port %d | Rewards: %d | Delay resets: %d | Water: %.2f µL | Total: %.2f mL', ...
-            selectedPort, responseLicks, burstCount, waterThisTrial * 1000000, BpodSystem.Data.TotalWaterDispensed * 1000);
+        % Display trial information
+        fprintf('Trial %d: Port %d | Rewards: %d | Delay resets: %d | Water: %.2f µL | Total: %.2f mL', ...
+            currentTrial, selectedPort, responseLicks, burstCount, waterThisTrial * 1000000, BpodSystem.Data.TotalWaterDispensed * 1000);
 
         % Show delay period progress
-        if outcome == 1 && burstCount == 0
+        if burstCount == 0
             fprintf(' | Delay: PERFECT (no licks)');
-        elseif outcome == 1 && burstCount > 0
+        else
             fprintf(' | Delay: completed after %d reset(s)', burstCount);
         end
         fprintf('\n');
@@ -396,24 +386,12 @@ end % Main function
 
 %% HELPER FUNCTIONS
 
-function [outcome, selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialOutcome(RawEvents, currentTrial)
-    % Calculate trial outcome based on terminal state
-    % outcome: 1=correct, 0=error, -1=ignore
-    % lickHistory: array with columns [timestamp, port, trialNum, stateNum, stateName]
+function [selectedPort, responseLicks, burstCount, lickHistory] = CalculateTrialData(RawEvents, currentTrial)
+    % Extract trial data: selected port, lick counts, and lick history
+    % lickHistory: cell array with columns {timestamp, port, trialNum, stateName}
 
     % Initialize lick history
     lickHistory = [];
-
-    % Check if States is a struct (sometimes it's just a number if no states entered)
-    if currentTrial <= 3
-        if isstruct(RawEvents.States)
-            stateNames = fieldnames(RawEvents.States);
-            fprintf('  DEBUG: States entered = %s\n', strjoin(stateNames, ', '));
-        else
-            fprintf('  DEBUG: States is not a struct! Type = %s, Value = %s\n', ...
-                class(RawEvents.States), mat2str(RawEvents.States));
-        end
-    end
 
     % Determine which port was selected - check multiple possible states
     selectedPort = 0;
@@ -442,27 +420,6 @@ function [outcome, selectedPort, responseLicks, burstCount, lickHistory] = Calcu
             selectedPort = 1;
         elseif isfield(RawEvents.Events, 'Port2Out') && ~isempty(RawEvents.Events.Port2Out)
             selectedPort = 2;
-        end
-    end
-
-    % Check terminal state for outcome
-    outcome = 0; % Default to error
-    if isstruct(RawEvents.States)
-        if isfield(RawEvents.States, 'RewardConsumption') && ~isnan(RawEvents.States.RewardConsumption(1))
-            outcome = 1; % Correct trial
-        elseif isfield(RawEvents.States, 'IgnoreTrial') && ~isnan(RawEvents.States.IgnoreTrial(1))
-            outcome = -1; % Ignored trial
-        else
-            % Debug output for first few trials
-            if currentTrial <= 3
-                fprintf('  DEBUG: No terminal state found. RewardConsumption exists: %d, IgnoreTrial exists: %d\n', ...
-                    isfield(RawEvents.States, 'RewardConsumption'), ...
-                    isfield(RawEvents.States, 'IgnoreTrial'));
-            end
-        end
-    else
-        if currentTrial <= 3
-            fprintf('  DEBUG: States is not a struct - cannot check terminal states\n');
         end
     end
 
@@ -556,69 +513,74 @@ end
 
 
 function UpdateOnlinePlot(Data, currentTrial, S)
-    % Update online visualization of trial outcomes and lick history
+    % Update online visualization of session data and lick history
 
     global BpodSystem
 
     if currentTrial == 1
-        % Initialize figure with larger size for additional plots
+        % Initialize figure
         BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Session Monitor', ...
-            'NumberTitle', 'off', 'Position', [100 100 1400 900]);
+            'NumberTitle', 'off', 'Position', [100 100 1200 900]);
     end
 
     figure(BpodSystem.ProtocolFigures.OutcomePlot);
 
-    % Plot trial outcomes
-    subplot(3,2,1);
-    outcomes = Data.Outcomes(1:currentTrial);
-    plot(1:currentTrial, outcomes, 'o-');
-    xlabel('Trial Number');
-    ylabel('Outcome');
-    title('Trial Outcomes');
-    ylim([-1.5 1.5]);
-    yticks([-1 0 1]);
-    yticklabels({'Ignore', 'Error', 'Correct'});
-    grid on;
-
-    % Plot port selection
-    subplot(3,2,2);
+    % Plot port selection distribution
+    subplot(2,3,1);
     portSelection = Data.SelectedPort(1:currentTrial);
     histogram(portSelection, [0.5 1.5 2.5]);
     xlabel('Selected Port');
     ylabel('Count');
     title('Port Selection Distribution');
     xticks([1 2]);
+    grid on;
 
-    % Plot response licks
-    subplot(3,2,3);
+    % Plot response licks over trials
+    subplot(2,3,2);
     responseLicks = Data.ResponseLickCount(1:currentTrial);
-    plot(1:currentTrial, responseLicks, 'o-');
+    plot(1:currentTrial, responseLicks, 'o-', 'LineWidth', 1.5);
     xlabel('Trial Number');
     ylabel('Reward Count');
     title('Rewards per Trial');
     grid on;
 
-    % Plot delay resets
-    subplot(3,2,4);
+    % Plot delay resets over trials
+    subplot(2,3,3);
     delayResets = Data.DelayTimerResets(1:currentTrial);
-    plot(1:currentTrial, delayResets, 'o-');
+    plot(1:currentTrial, delayResets, 'o-', 'LineWidth', 1.5, 'Color', [0.85 0.33 0.1]);
     xlabel('Trial Number');
     ylabel('Reset Count');
     title('Delay Timer Resets per Trial');
     grid on;
 
-    % Plot total water consumption over time
-    subplot(3,2,5);
+    % Plot total water consumption
+    subplot(2,3,4);
     totalWater_mL = Data.TotalWaterDispensed * 1000; % Convert to mL
     bar(1, totalWater_mL, 'FaceColor', [0.2 0.6 0.8]);
     ylabel('Water (mL)');
-    title(sprintf('Total Water Dispensed: %.2f mL', totalWater_mL));
+    title(sprintf('Total Water: %.2f mL', totalWater_mL));
     xlim([0.5 1.5]);
     set(gca, 'XTick', []);
+    ylim([0 max(totalWater_mL * 1.2, 0.1)]);
     grid on;
 
+    % Plot cumulative water over trials
+    subplot(2,3,5);
+    if currentTrial > 1
+        cumulativeWater = zeros(1, currentTrial);
+        cumulativeWater(1) = Data.ResponseLickCount(1) * Data.TrialRewardSize(1);
+        for i = 2:currentTrial
+            cumulativeWater(i) = cumulativeWater(i-1) + Data.ResponseLickCount(i) * Data.TrialRewardSize(i);
+        end
+        plot(1:currentTrial, cumulativeWater * 1000, '-', 'LineWidth', 2, 'Color', [0.2 0.6 0.8]);
+        xlabel('Trial Number');
+        ylabel('Cumulative Water (mL)');
+        title('Water Consumption Over Time');
+        grid on;
+    end
+
     % Plot lick burst history (last 20 seconds)
-    subplot(3,2,6);
+    subplot(2,3,6);
     cla; % Clear previous plot
     hold on;
 
