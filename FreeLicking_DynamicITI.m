@@ -96,6 +96,18 @@ if S.GUI.ZaberEnabled
         Ly_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
         disp('Zaber motors initialized and moved to initial positions');
+        disp('=======================================================');
+        disp('MOTOR POSITIONING MODE');
+        disp('=======================================================');
+        disp('Adjust motor positions using the GUI parameters:');
+        disp('  - Z_motor_pos: Vertical position');
+        disp('  - Lx_motor_pos: Horizontal X position');
+        disp('  - Ly_motor_pos: Horizontal Y position');
+        disp(' ');
+        disp('Press ENTER when motors are positioned correctly...');
+        pause; % Wait for user to press Enter
+        disp('Motor positioning complete. Starting session...');
+        disp(' ');
 
     catch ME
         warning('Failed to initialize Zaber motors: %s', ME.message);
