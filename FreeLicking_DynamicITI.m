@@ -79,70 +79,30 @@ if S.GUI.ZaberEnabled
         % Set soft code handler for motor control
         BpodSystem.SoftCodeHandlerFunction = 'MySoftCodeHandler';
 
-        % Clear classes to avoid redefinition error
-        clear classes;
-
         % Open serial connection
-        fprintf('Opening motor connection on %s...\n', motors_properties.PORT);
         motors = ZaberTCD1000(motors_properties.PORT);
         serial_open(motors);
-        fprintf('Motor connection opened successfully\n');
 
         % Setup manual motor control callbacks
         p = find(cellfun(@(x) strcmp(x,'Z_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
-        if ~isempty(p)
-            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Z_Move});
-            initialPos = str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
-            fprintf('Moving Z motor to initial position: %d\n', initialPos);
-            Motor_Move(initialPos, motors_properties.Z_motor_num);
-        end
+        set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Z_Move});
+        Z_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
         p = find(cellfun(@(x) strcmp(x,'Lx_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
-        if ~isempty(p)
-            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Lx_Move});
-            initialPos = str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
-            fprintf('Moving Lx motor to initial position: %d\n', initialPos);
-            Motor_Move(initialPos, motors_properties.Lx_motor_num);
-        end
+        set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Lx_Move});
+        Lx_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
         p = find(cellfun(@(x) strcmp(x,'Ly_motor_pos'),BpodSystem.GUIData.ParameterGUI.ParamNames));
-        if ~isempty(p)
-            set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Ly_Move});
-            initialPos = str2double(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
-            fprintf('Moving Ly motor to initial position: %d\n', initialPos);
-            Motor_Move(initialPos, motors_properties.Ly_motor_num);
-        end
+        set(BpodSystem.GUIHandles.ParameterGUI.Params(p),'callback',{@manual_Ly_Move});
+        Ly_Move(get(BpodSystem.GUIHandles.ParameterGUI.Params(p),'String'));
 
-        disp('Zaber motors initialized and moved to center positions');
-        disp('You can manually adjust motor positions via GUI parameters during trials');
+        disp('Zaber motors initialized and moved to initial positions');
 
     catch ME
         warning('Failed to initialize Zaber motors: %s', ME.message);
         S.GUI.ZaberEnabled = 0;
     end
 end
-
-%% Nested motor movement functions (must be defined here to access motors_properties)
-    function manual_Z_Move(hObject, ~)
-        position = str2double(get(hObject, 'String'));
-        fprintf('[DEBUG] Z motor callback triggered: moving to %d (motor #%d)\n', position, motors_properties.Z_motor_num);
-        Motor_Move(position, motors_properties.Z_motor_num);
-        fprintf('[DEBUG] Z motor move command sent\n');
-    end
-
-    function manual_Lx_Move(hObject, ~)
-        position = str2double(get(hObject, 'String'));
-        fprintf('[DEBUG] Lx motor callback triggered: moving to %d (motor #%d)\n', position, motors_properties.Lx_motor_num);
-        Motor_Move(position, motors_properties.Lx_motor_num);
-        fprintf('[DEBUG] Lx motor move command sent\n');
-    end
-
-    function manual_Ly_Move(hObject, ~)
-        position = str2double(get(hObject, 'String'));
-        fprintf('[DEBUG] Ly motor callback triggered: moving to %d (motor #%d)\n', position, motors_properties.Ly_motor_num);
-        Motor_Move(position, motors_properties.Ly_motor_num);
-        fprintf('[DEBUG] Ly motor move command sent\n');
-    end
 
 %% Session Initialization - Deliver water to both ports
 disp('=== SESSION INITIALIZATION ===');
@@ -729,4 +689,49 @@ function UpdateOnlinePlot(Data, currentTrial, S)
     hold off;
 
     drawnow;
+end
+
+
+%% Motor movement helper functions
+
+function manual_Z_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Z_motor_num);
+end
+
+function manual_Lx_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Lx_motor_num);
+end
+
+function manual_Ly_Move(hObject, ~)
+    global motors_properties;
+    position = str2double(get(hObject, 'String'));
+    Motor_Move(position, motors_properties.Ly_motor_num);
+end
+
+function Z_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
+    end
+    Motor_Move(position, motors_properties.Z_motor_num);
+end
+
+function Lx_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
+    end
+    Motor_Move(position, motors_properties.Lx_motor_num);
+end
+
+function Ly_Move(position)
+    global motors_properties;
+    if ischar(position) || isstring(position)
+        position = str2double(position);
+    end
+    Motor_Move(position, motors_properties.Ly_motor_num);
 end
