@@ -666,46 +666,37 @@ function UpdateOnlinePlot(Data, currentTrial, S)
 end
 
 
-%% Motor movement helper functions
+%% Motor movement functions
 
 function manual_Z_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Z_motor_num);
+%global motors_properties;
+position = str2double(get(hObject, 'String'));
+Motor_Move(position, motors_properties.Z_motor_num);
 end
 
 function manual_Lx_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Lx_motor_num);
+%global motors_properties;
+position = str2double(get(hObject, 'String'));
+Motor_Move(position, motors_properties.Lx_motor_num);
 end
 
 function manual_Ly_Move(hObject, ~)
-    global motors_properties;
-    position = str2double(get(hObject, 'String'));
-    Motor_Move(position, motors_properties.Ly_motor_num);
+%global motors_properties;
+position = str2double(get(hObject, 'String'));
+Motor_Move(position, motors_properties.Ly_motor_num);
 end
 
 function Z_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Z_motor_num);
+%global motors_properties;
+Motor_Move(position, motors_properties.Z_motor_num);
 end
 
 function Lx_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Lx_motor_num);
+%global motors_properties;
+Motor_Move(position, motors_properties.Lx_motor_num);
 end
 
 function Ly_Move(position)
-    global motors_properties;
-    if ischar(position) || isstring(position)
-        position = str2double(position);
-    end
-    Motor_Move(position, motors_properties.Ly_motor_num);
+%global motors_properties;
+Motor_Move(position, motors_properties.Ly_motor_num);
 end
