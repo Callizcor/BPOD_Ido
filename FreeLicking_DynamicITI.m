@@ -459,7 +459,11 @@ for currentTrial = 1:MaxTrials
 
         % Display trial information with block and delay progress
         portName = {'Left', 'Right', 'None'};
-        portIdx = max(1, min(selectedPort, 3));  % Clamp to 1-3
+        if selectedPort == 0
+            portIdx = 3;  % None
+        else
+            portIdx = min(selectedPort, 2);  % 1 or 2
+        end
 
         fprintf('Trial %d [Block %d-%d, Type %d]: ', ...
             currentTrial, currentBlock, trialInBlock, currentBlockParams.BlockType);
