@@ -158,8 +158,14 @@ end
 %% Pause protocol for motor adjustments
 disp('==========================================================');
 disp('PROTOCOL PAUSED - Adjust motors and settings as needed');
+disp('Motor positions can be adjusted via Motor Control GUI');
+disp('Press ENTER after changing a motor value to move it');
 disp('Press PLAY button in Bpod console to begin session');
 disp('==========================================================');
+
+% Create separate Motor Control GUI
+CreateMotorControlGUI(S);
+
 BpodSystem.Status.Pause = 1;
 HandlePauseCondition;
 if BpodSystem.Status.BeingUsed == 0
@@ -465,30 +471,23 @@ for currentTrial = 1:MaxTrials
             portIdx = min(selectedPort, 2);  % 1 or 2
         end
 
-        fprintf('Trial %d [Block %d-%d, Type %d]: ', ...
-            currentTrial, currentBlock, trialInBlock, currentBlockParams.BlockType);
+        fprintf('Trial %d [Block %d-%d]: ', ...
+            currentTrial, currentBlock, trialInBlock);
 
         if outcome == 1
-            fprintf('CORRECT | ');
-        elseif outcome == 0
-            fprintf('ERROR | ');
+            fprintf('✓ COMPLETED | Port: %s | Licks: %d', ...
+                portName{portIdx}, responseLicks);
+            if burstCount == 0
+                fprintf(' | Delay: PERFECT');
+            else
+                fprintf(' | Delay: %d reset(s)', burstCount);
+            end
         else
-            fprintf('IGNORE | ');
+            fprintf('✗ IGNORED | No port selected (timeout)');
         end
 
-        fprintf('Port: %s | Rewards: %d | Delay resets: %d', ...
-            portName{portIdx}, responseLicks, burstCount);
-
-        % Show delay period progress
-        if outcome == 1 && burstCount == 0
-            fprintf(' | Delay: PERFECT');
-        elseif outcome == 1 && burstCount > 0
-            fprintf(' | Delay: %d reset(s)', burstCount);
-        end
-
-        fprintf(' | Reward: %.3fs | Total water: %.1f uL\n', ...
-            BpodSystem.Data.TrialRewardSize(currentTrial), ...
-            BpodSystem.Data.TotalWaterDelivered);
+        fprintf(' | Water: %.1f/%.1f uL\n', ...
+            trialWater, BpodSystem.Data.TotalWaterDelivered);
     end
 
     %% Handle Pause and Stop
@@ -731,27 +730,28 @@ function UpdateOnlinePlot(Data, currentTrial)
             'VerticalAlignment', 'middle');
     end
 
-    % --- Subplot 6: Performance by block type ---
+    % --- Subplot 6: Water consumption tracking ---
     subplot(3,2,6);
-    if isfield(Data, 'BlockNumber') && ~isempty(Data.BlockNumber) && currentTrial >= 5
-        blockTypes = unique(Data.BlockSequence);
-        perfByBlockType = zeros(1, length(blockTypes));
+    if isfield(Data, 'WaterPerTrial') && ~isempty(Data.WaterPerTrial)
+        waterPerTrial = Data.WaterPerTrial(1:currentTrial);
 
-        for bt = 1:length(blockTypes)
-            trialsInBlockType = find(Data.BlockSequence(Data.BlockNumber(1:currentTrial)) == blockTypes(bt));
-            if ~isempty(trialsInBlockType)
-                perfByBlockType(bt) = sum(outcomes(trialsInBlockType) == 1) / length(trialsInBlockType) * 100;
-            end
-        end
+        % Plot cumulative water
+        cumulativeWater = cumsum(waterPerTrial);
 
-        bar(blockTypes, perfByBlockType);
-        xlabel('Block Type');
-        ylabel('Correct (%)');
-        title('Performance by Block Type');
-        ylim([0 100]);
+        yyaxis left
+        plot(1:currentTrial, cumulativeWater, 'b-', 'LineWidth', 2);
+        ylabel('Cumulative Water (uL)', 'Color', 'b');
+        ylim([0 max(cumulativeWater)*1.1]);
+
+        yyaxis right
+        bar(1:currentTrial, waterPerTrial, 'FaceColor', [0.8 0.8 0.8], 'EdgeColor', 'none');
+        ylabel('Water per Trial (uL)', 'Color', 'k');
+
+        xlabel('Trial Number');
+        title(sprintf('Water Delivered (Total: %.1f uL)', Data.TotalWaterDelivered));
         grid on;
     else
-        text(0.5, 0.5, 'Not enough data', 'HorizontalAlignment', 'center');
+        text(0.5, 0.5, 'No water data', 'HorizontalAlignment', 'center');
         axis off;
     end
 
@@ -880,4 +880,126 @@ function [currentBlock, trialInBlock] = GetCurrentBlock(trialNumber, blockSize, 
     end
 
     trialInBlock = mod(trialNumber - 1, blockSize) + 1;
+end
+
+
+function CreateMotorControlGUI(S)
+    % Create separate motor control GUI window
+    global BpodSystem motors_properties
+
+    if ~S.GUI.ZaberEnabled
+        return;
+    end
+
+    % Create figure
+    BpodSystem.GUIHandles.MotorControlFig = figure('Name', 'Motor Control', ...
+        'NumberTitle', 'off', ...
+        'Position', [100, 300, 400, 350], ...
+        'MenuBar', 'none', ...
+        'Resize', 'off', ...
+        'CloseRequestFcn', @(~,~) set(gcf, 'Visible', 'off'));  % Hide instead of close
+
+    % Create UI controls
+    yPos = 300;
+    spacing = 60;
+
+    % Z Motor
+    uicontrol('Style', 'text', 'Position', [20 yPos 150 20], ...
+        'String', 'Z Position (lickable):', 'HorizontalAlignment', 'left', 'FontSize', 10);
+    BpodSystem.GUIHandles.Z_motor_edit = uicontrol('Style', 'edit', ...
+        'Position', [180 yPos 100 25], ...
+        'String', num2str(S.GUI.Z_motor_pos), ...
+        'FontSize', 10, ...
+        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Z_motor_num));
+    uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
+        'String', 'Move Z', 'FontSize', 10, ...
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_motor_edit, motors_properties.Z_motor_num));
+
+    % Z NonLickable
+    yPos = yPos - spacing;
+    uicontrol('Style', 'text', 'Position', [20 yPos 150 20], ...
+        'String', 'Z Retracted (ITI):', 'HorizontalAlignment', 'left', 'FontSize', 10);
+    BpodSystem.GUIHandles.Z_retract_edit = uicontrol('Style', 'edit', ...
+        'Position', [180 yPos 100 25], ...
+        'String', num2str(S.GUI.Z_NonLickable), ...
+        'FontSize', 10, ...
+        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Z_motor_num));
+    uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
+        'String', 'Retract Z', 'FontSize', 10, ...
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_retract_edit, motors_properties.Z_motor_num));
+
+    % Lx Motor
+    yPos = yPos - spacing;
+    uicontrol('Style', 'text', 'Position', [20 yPos 150 20], ...
+        'String', 'Lx Position (left-right):', 'HorizontalAlignment', 'left', 'FontSize', 10);
+    BpodSystem.GUIHandles.Lx_motor_edit = uicontrol('Style', 'edit', ...
+        'Position', [180 yPos 100 25], ...
+        'String', num2str(S.GUI.Lx_motor_pos), ...
+        'FontSize', 10, ...
+        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Lx_motor_num));
+    uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
+        'String', 'Move Lx', 'FontSize', 10, ...
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Lx_motor_edit, motors_properties.Lx_motor_num));
+
+    % Ly Motor
+    yPos = yPos - spacing;
+    uicontrol('Style', 'text', 'Position', [20 yPos 150 20], ...
+        'String', 'Ly Position (anterior-posterior):', 'HorizontalAlignment', 'left', 'FontSize', 10);
+    BpodSystem.GUIHandles.Ly_motor_edit = uicontrol('Style', 'edit', ...
+        'Position', [180 yPos 100 25], ...
+        'String', num2str(S.GUI.Ly_motor_pos), ...
+        'FontSize', 10, ...
+        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Ly_motor_num));
+    uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
+        'String', 'Move Ly', 'FontSize', 10, ...
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Ly_motor_edit, motors_properties.Ly_motor_num));
+
+    % Status text
+    yPos = yPos - spacing + 10;
+    BpodSystem.GUIHandles.MotorStatus = uicontrol('Style', 'text', ...
+        'Position', [20 yPos 360 30], ...
+        'String', 'Ready - Enter position and click Move or press ENTER', ...
+        'HorizontalAlignment', 'center', ...
+        'FontSize', 9, ...
+        'ForegroundColor', [0 0.5 0]);
+
+    % Info text
+    uicontrol('Style', 'text', 'Position', [20 10 360 30], ...
+        'String', 'Positions in microsteps. Z_lickable ≈ 210000, Z_retracted ≈ 60000', ...
+        'HorizontalAlignment', 'center', 'FontSize', 8, 'ForegroundColor', [0.5 0.5 0.5]);
+end
+
+
+function moveMotorCallback(editHandle, motorNum)
+    % Callback for motor movement
+    global BpodSystem
+
+    try
+        position = str2double(get(editHandle, 'String'));
+
+        if isnan(position)
+            set(BpodSystem.GUIHandles.MotorStatus, 'String', 'ERROR: Invalid position value', ...
+                'ForegroundColor', [1 0 0]);
+            return;
+        end
+
+        motorNames = {'Lx', 'Z', '?', 'Ly'};
+        motorName = motorNames{motorNum};
+
+        set(BpodSystem.GUIHandles.MotorStatus, 'String', ...
+            sprintf('Moving %s to %d...', motorName, round(position)), ...
+            'ForegroundColor', [0 0 1]);
+        drawnow;
+
+        Motor_Move(position, motorNum);
+
+        set(BpodSystem.GUIHandles.MotorStatus, 'String', ...
+            sprintf('✓ %s moved to %d', motorName, round(position)), ...
+            'ForegroundColor', [0 0.5 0]);
+
+    catch ME
+        set(BpodSystem.GUIHandles.MotorStatus, 'String', ...
+            sprintf('ERROR: %s', ME.message), ...
+            'ForegroundColor', [1 0 0]);
+    end
 end
