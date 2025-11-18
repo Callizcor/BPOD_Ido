@@ -159,7 +159,7 @@ end
 disp('==========================================================');
 disp('PROTOCOL PAUSED - Adjust motors and settings as needed');
 if S.GUI.ZaberEnabled
-    disp('Motor Control GUI opened - adjust positions and click Move buttons');
+    disp('Motor Control GUI will open - adjust positions and click Move buttons');
 else
     disp('WARNING: ZaberEnabled=0 - Motors are DISABLED');
     disp('Set ZaberEnabled=1 in GUI to enable motor control');
@@ -167,8 +167,10 @@ end
 disp('Press PLAY button in Bpod console to begin session');
 disp('==========================================================');
 
-% Create separate Motor Control GUI
-CreateMotorControlGUI(S);
+% Create separate Motor Control GUI (only if motors enabled)
+if S.GUI.ZaberEnabled
+    CreateMotorControlGUI(S);
+end
 
 BpodSystem.Status.Pause = 1;
 HandlePauseCondition;
@@ -514,20 +516,9 @@ end % Main function
 
 %% HELPER FUNCTIONS
 
-function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(RawEvents, currentTrial)
+function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutcome(RawEvents, currentTrial) %#ok<INUSD>
     % Calculate trial outcome based on terminal state
     % outcome: 1=correct, 0=error, -1=ignore
-
-    % Check if States is a struct (sometimes it's just a number if no states entered)
-    if currentTrial <= 3
-        if isstruct(RawEvents.States)
-            stateNames = fieldnames(RawEvents.States);
-            fprintf('  DEBUG: States entered = %s\n', strjoin(stateNames, ', '));
-        else
-            fprintf('  DEBUG: States is not a struct! Type = %s, Value = %s\n', ...
-                class(RawEvents.States), mat2str(RawEvents.States));
-        end
-    end
 
     % Determine which port was selected - check multiple possible states
     selectedPort = 0;
@@ -566,17 +557,6 @@ function [outcome, selectedPort, responseLicks, burstCount] = CalculateTrialOutc
             outcome = 1; % Correct trial
         elseif isfield(RawEvents.States, 'IgnoreTrial') && ~isnan(RawEvents.States.IgnoreTrial(1))
             outcome = -1; % Ignored trial
-        else
-            % Debug output for first few trials
-            if currentTrial <= 3
-                fprintf('  DEBUG: No terminal state found. RewardConsumption exists: %d, IgnoreTrial exists: %d\n', ...
-                    isfield(RawEvents.States, 'RewardConsumption'), ...
-                    isfield(RawEvents.States, 'IgnoreTrial'));
-            end
-        end
-    else
-        if currentTrial <= 3
-            fprintf('  DEBUG: States is not a struct - cannot check terminal states\n');
         end
     end
 
@@ -891,6 +871,18 @@ function CreateMotorControlGUI(S)
         return;
     end
 
+    % Check if motor properties are initialized
+    if isempty(motors_properties) || ~isfield(motors_properties, 'Z_motor_num')
+        warning('Motor properties not initialized. Cannot create Motor Control GUI.');
+        return;
+    end
+
+    % Check if GUI already exists
+    if isfield(BpodSystem.GUIHandles, 'MotorControlFig') && ishandle(BpodSystem.GUIHandles.MotorControlFig)
+        figure(BpodSystem.GUIHandles.MotorControlFig);  % Bring to front
+        return;
+    end
+
     % Create figure
     BpodSystem.GUIHandles.MotorControlFig = figure('Name', 'Motor Control', ...
         'NumberTitle', 'off', ...
@@ -903,6 +895,11 @@ function CreateMotorControlGUI(S)
     yPos = 300;
     spacing = 60;
 
+    % Store motor numbers for callbacks
+    Z_num = motors_properties.Z_motor_num;
+    Lx_num = motors_properties.Lx_motor_num;
+    Ly_num = motors_properties.Ly_motor_num;
+
     % Z Motor
     uicontrol('Style', 'text', 'Position', [20 yPos 150 20], ...
         'String', 'Z Position (lickable):', 'HorizontalAlignment', 'left', 'FontSize', 10);
@@ -910,10 +907,10 @@ function CreateMotorControlGUI(S)
         'Position', [180 yPos 100 25], ...
         'String', num2str(S.GUI.Z_motor_pos), ...
         'FontSize', 10, ...
-        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Z_motor_num));
+        'Callback', @(h,~) moveMotorCallback(h, Z_num));
     uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
         'String', 'Move Z', 'FontSize', 10, ...
-        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_motor_edit, motors_properties.Z_motor_num));
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_motor_edit, Z_num));
 
     % Z NonLickable
     yPos = yPos - spacing;
@@ -923,10 +920,10 @@ function CreateMotorControlGUI(S)
         'Position', [180 yPos 100 25], ...
         'String', num2str(S.GUI.Z_NonLickable), ...
         'FontSize', 10, ...
-        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Z_motor_num));
+        'Callback', @(h,~) moveMotorCallback(h, Z_num));
     uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
         'String', 'Retract Z', 'FontSize', 10, ...
-        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_retract_edit, motors_properties.Z_motor_num));
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Z_retract_edit, Z_num));
 
     % Lx Motor
     yPos = yPos - spacing;
@@ -936,10 +933,10 @@ function CreateMotorControlGUI(S)
         'Position', [180 yPos 100 25], ...
         'String', num2str(S.GUI.Lx_motor_pos), ...
         'FontSize', 10, ...
-        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Lx_motor_num));
+        'Callback', @(h,~) moveMotorCallback(h, Lx_num));
     uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
         'String', 'Move Lx', 'FontSize', 10, ...
-        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Lx_motor_edit, motors_properties.Lx_motor_num));
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Lx_motor_edit, Lx_num));
 
     % Ly Motor
     yPos = yPos - spacing;
@@ -949,10 +946,10 @@ function CreateMotorControlGUI(S)
         'Position', [180 yPos 100 25], ...
         'String', num2str(S.GUI.Ly_motor_pos), ...
         'FontSize', 10, ...
-        'Callback', @(h,~) moveMotorCallback(h, motors_properties.Ly_motor_num));
+        'Callback', @(h,~) moveMotorCallback(h, Ly_num));
     uicontrol('Style', 'pushbutton', 'Position', [290 yPos 80 25], ...
         'String', 'Move Ly', 'FontSize', 10, ...
-        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Ly_motor_edit, motors_properties.Ly_motor_num));
+        'Callback', @(~,~) moveMotorCallback(BpodSystem.GUIHandles.Ly_motor_edit, Ly_num));
 
     % Status text
     yPos = yPos - spacing + 10;
