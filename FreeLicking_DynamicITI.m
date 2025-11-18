@@ -1,8 +1,13 @@
 function FreeLicking_DynamicITI
-% FREE LICKING PROTOCOL WITH DYNAMIC INTER-TRIAL INTERVALS
+% FREE LICKING PROTOCOL WITH BLOCK-BASED DYNAMIC PARAMETERS
 % Mice self-initiate trials by licking either port. Protocol delivers water
-% rewards during 5-second response period, then requires 2-second delay
-% without licking. Incorrect licks during delay reset the timer.
+% rewards during 5-second response period, then requires delay without licking.
+% Incorrect licks during delay reset the timer based on block parameters.
+%
+% BLOCKS: Each block has configurable:
+%   - Reward sizes (left/right ports can differ)
+%   - Delay duration
+%   - Error penalty (where to reset delay timer on lick)
 %
 % Hardware:
 %   - Lick ports: Port1Out/Port2Out (circuit closing)
@@ -22,13 +27,34 @@ S = BpodSystem.ProtocolSettings; % Load settings from GUI
 if isempty(fieldnames(S))
     % Initialize default parameters if settings not loaded
     S.GUI.ResponseDuration = 5;        % Response period duration (seconds)
-    S.GUI.DelayDuration = 2;           % Required delay without licking (seconds)
     S.GUI.BurstIgnoreDuration = 0.5;   % Duration to ignore licks after incorrect lick (seconds)
     S.GUI.DebounceDuration = 0.05;     % Debounce duration (seconds)
-    S.GUI.RewardSize = 0.01;           % Valve duration for reward (seconds)
     S.GUI.InitRewardSize = 0.05;       % Initial water delivery (seconds)
     S.GUI.InitWaitDuration = 0.5;      % Wait after initial water (seconds)
     S.GUI.TrialTimeout = 3600;         % Ready state timeout (seconds)
+
+    % Block design parameters
+    S.GUI.BlocksEnabled = 1;           % Enable block-based design (0=single block mode)
+    S.GUI.BlockSize = 40;              % Trials per block
+    S.GUI.NumBlocks = 10;              % Number of blocks to generate
+
+    % Block 1 parameters (easy: short delay, small reset penalty, equal rewards)
+    S.GUI.Block1_DelayDuration = 2.0;      % Delay time (s)
+    S.GUI.Block1_ErrorResetSegment = 1;    % 1=full reset, 2=75%, 3=50%, 4=25%
+    S.GUI.Block1_RewardLeft = 0.01;        % Left port reward size (s)
+    S.GUI.Block1_RewardRight = 0.01;       % Right port reward size (s)
+
+    % Block 2 parameters (medium: longer delay, partial reset, equal rewards)
+    S.GUI.Block2_DelayDuration = 3.0;
+    S.GUI.Block2_ErrorResetSegment = 2;    % Reset to 75% (milder penalty)
+    S.GUI.Block2_RewardLeft = 0.015;
+    S.GUI.Block2_RewardRight = 0.015;
+
+    % Block 3 parameters (hard: long delay, full reset, asymmetric rewards)
+    S.GUI.Block3_DelayDuration = 4.0;
+    S.GUI.Block3_ErrorResetSegment = 1;    % Full reset
+    S.GUI.Block3_RewardLeft = 0.02;        % Larger reward on left
+    S.GUI.Block3_RewardRight = 0.01;       % Smaller reward on right
 
     % Camera sync parameters
     S.GUI.CameraSyncEnabled = 1;       % Enable camera sync
@@ -50,17 +76,23 @@ end
 BpodParameterGUI('init', S);
 
 %% Initialize Data Storage
-BpodSystem.Data.TrialTypes = [];
-BpodSystem.Data.SelectedPort = [];
+BpodSystem.Data.TrialTypes = [];        % Port choice: 1=left, 2=right, 0=no choice
+BpodSystem.Data.SelectedPort = [];      % Same as TrialTypes (for compatibility)
 BpodSystem.Data.ResponseLickCount = [];
 BpodSystem.Data.IncorrectLickBursts = [];
 BpodSystem.Data.DelayTimerResets = [];
 BpodSystem.Data.TrialStartTime = [];
 BpodSystem.Data.TrialEndTime = [];
-BpodSystem.Data.TrialRewardSize = [];
+BpodSystem.Data.TrialRewardSize = [];   % Actual reward size delivered
 BpodSystem.Data.MotorPositions = [];
 BpodSystem.Data.Bitcode = {};
-BpodSystem.Data.Outcomes = []; % 1=correct, 0=error, -1=ignore
+BpodSystem.Data.Outcomes = [];          % 1=correct, 0=error, -1=ignore
+
+% Block-specific data
+BpodSystem.Data.BlockNumber = [];       % Which block each trial belongs to
+BpodSystem.Data.TrialInBlock = [];      % Trial number within block
+BpodSystem.Data.BlockParams = [];       % Parameters for each block
+BpodSystem.Data.BlockSequence = [];     % Sequence of block types
 
 %% Initialize Zaber Motors (if enabled)
 global motors motors_properties
@@ -141,15 +173,38 @@ RawEvents = RunStateMachine();
 
 disp('Session initialization complete. Ready for trials.');
 
+%% Generate Block Sequence
+[BlockSequence, BlockParams] = GenerateBlockSequence(S);
+BpodSystem.Data.BlockSequence = BlockSequence;
+BpodSystem.Data.BlockParams = BlockParams;
+
+disp('=== BLOCK SEQUENCE ===');
+fprintf('Total blocks: %d\n', length(BlockSequence));
+for i = 1:min(length(BlockSequence), 5)  % Show first 5 blocks
+    bp = BlockParams(i);
+    fprintf('Block %d (Type %d): Delay=%.1fs, ErrorReset=%d, Rewards=[%.3f, %.3f]s\n', ...
+        i, BlockSequence(i), bp.DelayDuration, bp.ErrorResetSegment, ...
+        bp.RewardLeft, bp.RewardRight);
+end
+if length(BlockSequence) > 5
+    fprintf('... and %d more blocks\n', length(BlockSequence) - 5);
+end
+
 %% Main Trial Loop
 for currentTrial = 1:MaxTrials
 
     S = BpodParameterGUI('sync', S); % Sync parameters with GUI
 
+    % Determine current block and trial within block
+    [currentBlock, trialInBlock] = GetCurrentBlock(currentTrial, S.GUI.BlockSize, length(BlockSequence));
+    currentBlockParams = BlockParams(currentBlock);
+
+    BpodSystem.Data.BlockNumber(currentTrial) = currentBlock;
+    BpodSystem.Data.TrialInBlock(currentTrial) = trialInBlock;
+
     % Generate trial-specific parameters
     TrialStartTime = now();
     BpodSystem.Data.TrialStartTime(currentTrial) = TrialStartTime;
-    BpodSystem.Data.TrialRewardSize(currentTrial) = S.GUI.RewardSize;
 
     % Generate 20-bit random bitcode (0 to 1,048,575)
     if S.GUI.BitcodeEnabled
@@ -220,9 +275,9 @@ for currentTrial = 1:MaxTrials
         'StateChangeConditions', {'GlobalTimer2_End', 'Delay_2_0s', 'Port1Out', 'RewardPort1'}, ...
         'OutputActions', {});
 
-    % Reward delivery for Port 1
+    % Reward delivery for Port 1 (LEFT) - uses block-specific reward size
     sma = AddState(sma, 'Name', 'RewardPort1', ...
-        'Timer', S.GUI.RewardSize, ...
+        'Timer', currentBlockParams.RewardLeft, ...
         'StateChangeConditions', {'Tup', 'DebouncePort1', 'GlobalTimer2_End', 'Delay_2_0s'}, ...
         'OutputActions', {'Valve1', 1});
 
@@ -245,9 +300,9 @@ for currentTrial = 1:MaxTrials
         'StateChangeConditions', {'GlobalTimer2_End', 'Delay_2_0s', 'Port2Out', 'RewardPort2'}, ...
         'OutputActions', {});
 
-    % Reward delivery for Port 2
+    % Reward delivery for Port 2 (RIGHT) - uses block-specific reward size
     sma = AddState(sma, 'Name', 'RewardPort2', ...
-        'Timer', S.GUI.RewardSize, ...
+        'Timer', currentBlockParams.RewardRight, ...
         'StateChangeConditions', {'Tup', 'DebouncePort2', 'GlobalTimer2_End', 'Delay_2_0s'}, ...
         'OutputActions', {'Valve2', 1});
 
@@ -257,35 +312,51 @@ for currentTrial = 1:MaxTrials
         'StateChangeConditions', {'Tup', 'ResponsePort2', 'GlobalTimer2_End', 'Delay_2_0s'}, ...
         'OutputActions', {});
 
-    % ===== DELAY PERIOD: 2-second countdown (split into 0.5s segments for visibility) =====
-    % Delay: 2.0s remaining
+    % ===== DELAY PERIOD: Block-specific delay (split into 4 segments for visibility) =====
+    % Determine which state to reset to on error based on block parameters
+    switch currentBlockParams.ErrorResetSegment
+        case 1
+            errorResetState = 'Delay_2_0s';  % Full reset to start (100%)
+        case 2
+            errorResetState = 'Delay_1_5s';  % Reset to 75%
+        case 3
+            errorResetState = 'Delay_1_0s';  % Reset to 50%
+        case 4
+            errorResetState = 'Delay_0_5s';  % Reset to 25%
+        otherwise
+            errorResetState = 'Delay_2_0s';  % Default to full reset
+    end
+
+    segmentDuration = currentBlockParams.DelayDuration / 4;
+
+    % Delay: 100% remaining (start)
     sma = AddState(sma, 'Name', 'Delay_2_0s', ...
-        'Timer', S.GUI.DelayDuration / 4, ...
+        'Timer', segmentDuration, ...
         'StateChangeConditions', {'Tup', 'Delay_1_5s', 'Port1Out', 'BurstWindow', 'Port2Out', 'BurstWindow'}, ...
         'OutputActions', {});
 
-    % Delay: 1.5s remaining
+    % Delay: 75% remaining
     sma = AddState(sma, 'Name', 'Delay_1_5s', ...
-        'Timer', S.GUI.DelayDuration / 4, ...
+        'Timer', segmentDuration, ...
         'StateChangeConditions', {'Tup', 'Delay_1_0s', 'Port1Out', 'BurstWindow', 'Port2Out', 'BurstWindow'}, ...
         'OutputActions', {});
 
-    % Delay: 1.0s remaining
+    % Delay: 50% remaining
     sma = AddState(sma, 'Name', 'Delay_1_0s', ...
-        'Timer', S.GUI.DelayDuration / 4, ...
+        'Timer', segmentDuration, ...
         'StateChangeConditions', {'Tup', 'Delay_0_5s', 'Port1Out', 'BurstWindow', 'Port2Out', 'BurstWindow'}, ...
         'OutputActions', {});
 
-    % Delay: 0.5s remaining - final segment
+    % Delay: 25% remaining - final segment
     sma = AddState(sma, 'Name', 'Delay_0_5s', ...
-        'Timer', S.GUI.DelayDuration / 4, ...
+        'Timer', segmentDuration, ...
         'StateChangeConditions', {'Tup', 'RewardConsumption', 'Port1Out', 'BurstWindow', 'Port2Out', 'BurstWindow'}, ...
         'OutputActions', {});
 
-    % Burst window: ignore licks for 0.5s then reset delay timer to beginning
+    % Burst window: ignore licks then reset to block-specific delay state
     sma = AddState(sma, 'Name', 'BurstWindow', ...
         'Timer', S.GUI.BurstIgnoreDuration, ...
-        'StateChangeConditions', {'Tup', 'Delay_2_0s'}, ...  % Return to start of delay (resets timer)
+        'StateChangeConditions', {'Tup', errorResetState}, ...  % Block-specific reset
         'OutputActions', {});
 
     % ===== TERMINAL STATES =====
@@ -329,10 +400,20 @@ for currentTrial = 1:MaxTrials
 
         BpodSystem.Data.Outcomes(currentTrial) = outcome;
         BpodSystem.Data.SelectedPort(currentTrial) = selectedPort;
+        BpodSystem.Data.TrialTypes(currentTrial) = selectedPort;  % Trial type = port choice
         BpodSystem.Data.ResponseLickCount(currentTrial) = responseLicks;
         BpodSystem.Data.IncorrectLickBursts(currentTrial) = burstCount;
         BpodSystem.Data.DelayTimerResets(currentTrial) = burstCount;
         BpodSystem.Data.TrialEndTime(currentTrial) = now();
+
+        % Store actual reward size delivered
+        if selectedPort == 1
+            BpodSystem.Data.TrialRewardSize(currentTrial) = currentBlockParams.RewardLeft;
+        elseif selectedPort == 2
+            BpodSystem.Data.TrialRewardSize(currentTrial) = currentBlockParams.RewardRight;
+        else
+            BpodSystem.Data.TrialRewardSize(currentTrial) = 0;  % No port selected
+        end
 
         % Update online plots
         UpdateOnlinePlot(BpodSystem.Data, currentTrial);
@@ -340,8 +421,13 @@ for currentTrial = 1:MaxTrials
         % Save data
         SaveBpodSessionData;
 
-        % Display trial information with delay progress
-        fprintf('Trial %d: ', currentTrial);
+        % Display trial information with block and delay progress
+        portName = {'Left', 'Right', 'None'};
+        portIdx = max(1, min(selectedPort, 3));  % Clamp to 1-3
+
+        fprintf('Trial %d [Block %d-%d, Type %d]: ', ...
+            currentTrial, currentBlock, trialInBlock, currentBlockParams.BlockType);
+
         if outcome == 1
             fprintf('CORRECT | ');
         elseif outcome == 0
@@ -349,16 +435,18 @@ for currentTrial = 1:MaxTrials
         else
             fprintf('IGNORE | ');
         end
-        fprintf('Port %d | Rewards: %d | Delay resets: %d', ...
-            selectedPort, responseLicks, burstCount);
+
+        fprintf('Port: %s | Rewards: %d | Delay resets: %d', ...
+            portName{portIdx}, responseLicks, burstCount);
 
         % Show delay period progress
         if outcome == 1 && burstCount == 0
-            fprintf(' | Delay: PERFECT (no licks)');
+            fprintf(' | Delay: PERFECT');
         elseif outcome == 1 && burstCount > 0
-            fprintf(' | Delay: completed after %d reset(s)', burstCount);
+            fprintf(' | Delay: %d reset(s)', burstCount);
         end
-        fprintf('\n');
+
+        fprintf(' | Reward: %.3fs\n', BpodSystem.Data.TrialRewardSize(currentTrial));
     end
 
     %% Handle Pause and Stop
@@ -483,55 +571,147 @@ end
 
 
 function UpdateOnlinePlot(Data, currentTrial)
-    % Update online visualization of trial outcomes
+    % Update online visualization of trial outcomes with block information
 
     global BpodSystem
 
     if currentTrial == 1
-        % Initialize figure
-        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Trial Outcomes', 'NumberTitle', 'off');
+        % Initialize figure with larger size for 6 subplots
+        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Block-Based Trial Outcomes', ...
+            'NumberTitle', 'off', 'Position', [100 100 1400 900]);
     end
 
     figure(BpodSystem.ProtocolFigures.OutcomePlot);
+    clf;  % Clear figure for redrawing
 
-    % Plot trial outcomes
-    subplot(2,2,1);
+    % --- Subplot 1: Trial outcomes with block boundaries ---
+    subplot(3,2,1);
     outcomes = Data.Outcomes(1:currentTrial);
-    plot(1:currentTrial, outcomes, 'o-');
+    trialTypes = Data.TrialTypes(1:currentTrial);
+
+    % Plot outcomes colored by port choice
+    hold on;
+    for i = 1:currentTrial
+        if trialTypes(i) == 1  % Left port
+            color = [0 0.4470 0.7410];  % Blue
+        elseif trialTypes(i) == 2  % Right port
+            color = [0.8500 0.3250 0.0980];  % Orange
+        else  % No choice
+            color = [0.5 0.5 0.5];  % Gray
+        end
+
+        plot(i, outcomes(i), 'o', 'MarkerFaceColor', color, 'MarkerEdgeColor', color, 'MarkerSize', 6);
+    end
+
+    % Draw block boundaries
+    if isfield(Data, 'BlockNumber') && ~isempty(Data.BlockNumber)
+        blockChanges = find(diff([0 Data.BlockNumber(1:currentTrial)]) ~= 0);
+        for bc = blockChanges
+            xline(bc, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1);
+        end
+    end
+
     xlabel('Trial Number');
     ylabel('Outcome');
-    title('Trial Outcomes');
+    title('Trial Outcomes (Blue=Left, Orange=Right)');
     ylim([-1.5 1.5]);
     yticks([-1 0 1]);
     yticklabels({'Ignore', 'Error', 'Correct'});
     grid on;
+    hold off;
 
-    % Plot port selection
-    subplot(2,2,2);
+    % --- Subplot 2: Performance by port choice ---
+    subplot(3,2,2);
+    leftTrials = find(trialTypes == 1);
+    rightTrials = find(trialTypes == 2);
+
+    if ~isempty(leftTrials)
+        perfLeft = sum(outcomes(leftTrials) == 1) / length(leftTrials) * 100;
+    else
+        perfLeft = 0;
+    end
+
+    if ~isempty(rightTrials)
+        perfRight = sum(outcomes(rightTrials) == 1) / length(rightTrials) * 100;
+    else
+        perfRight = 0;
+    end
+
+    bar([1 2], [perfLeft perfRight]);
+    xlabel('Port');
+    ylabel('Correct (%)');
+    title(sprintf('Performance by Port (L=%.1f%%, R=%.1f%%)', perfLeft, perfRight));
+    xticks([1 2]);
+    xticklabels({'Left', 'Right'});
+    ylim([0 100]);
+    grid on;
+
+    % --- Subplot 3: Port selection distribution ---
+    subplot(3,2,3);
     portSelection = Data.SelectedPort(1:currentTrial);
     histogram(portSelection, [0.5 1.5 2.5]);
     xlabel('Selected Port');
     ylabel('Count');
-    title('Port Selection Distribution');
+    title(sprintf('Port Selection (L=%d, R=%d)', length(leftTrials), length(rightTrials)));
     xticks([1 2]);
+    xticklabels({'Left', 'Right'});
 
-    % Plot response licks
-    subplot(2,2,3);
-    responseLicks = Data.ResponseLickCount(1:currentTrial);
-    plot(1:currentTrial, responseLicks, 'o-');
-    xlabel('Trial Number');
-    ylabel('Reward Count');
-    title('Rewards per Trial');
-    grid on;
-
-    % Plot delay resets
-    subplot(2,2,4);
+    % --- Subplot 4: Delay resets over trials ---
+    subplot(3,2,4);
     delayResets = Data.DelayTimerResets(1:currentTrial);
-    plot(1:currentTrial, delayResets, 'o-');
+    plot(1:currentTrial, delayResets, 'o-', 'MarkerSize', 4);
     xlabel('Trial Number');
     ylabel('Reset Count');
-    title('Delay Timer Resets per Trial');
+    title(sprintf('Delay Timer Resets (Mean=%.2f)', mean(delayResets)));
     grid on;
+
+    % --- Subplot 5: Block parameters summary ---
+    subplot(3,2,5);
+    axis off;
+    if isfield(Data, 'BlockNumber') && ~isempty(Data.BlockNumber)
+        currentBlock = Data.BlockNumber(currentTrial);
+        currentBlockParams = Data.BlockParams(currentBlock);
+
+        infoText = {
+            '=== CURRENT BLOCK INFO ===';
+            sprintf('Block: %d / %d', currentBlock, length(Data.BlockParams));
+            sprintf('Trial in block: %d', Data.TrialInBlock(currentTrial));
+            sprintf('Block type: %d', Data.BlockSequence(currentBlock));
+            '';
+            '--- Parameters ---';
+            sprintf('Delay: %.2fs', currentBlockParams.DelayDuration);
+            sprintf('Error reset: Segment %d', currentBlockParams.ErrorResetSegment);
+            sprintf('Reward L: %.3fs', currentBlockParams.RewardLeft);
+            sprintf('Reward R: %.3fs', currentBlockParams.RewardRight);
+        };
+
+        text(0.1, 0.5, infoText, 'FontSize', 10, 'FontName', 'FixedWidth', ...
+            'VerticalAlignment', 'middle');
+    end
+
+    % --- Subplot 6: Performance by block type ---
+    subplot(3,2,6);
+    if isfield(Data, 'BlockNumber') && ~isempty(Data.BlockNumber) && currentTrial >= 5
+        blockTypes = unique(Data.BlockSequence);
+        perfByBlockType = zeros(1, length(blockTypes));
+
+        for bt = 1:length(blockTypes)
+            trialsInBlockType = find(Data.BlockSequence(Data.BlockNumber(1:currentTrial)) == blockTypes(bt));
+            if ~isempty(trialsInBlockType)
+                perfByBlockType(bt) = sum(outcomes(trialsInBlockType) == 1) / length(trialsInBlockType) * 100;
+            end
+        end
+
+        bar(blockTypes, perfByBlockType);
+        xlabel('Block Type');
+        ylabel('Correct (%)');
+        title('Performance by Block Type');
+        ylim([0 100]);
+        grid on;
+    else
+        text(0.5, 0.5, 'Not enough data', 'HorizontalAlignment', 'center');
+        axis off;
+    end
 
     drawnow;
 end
@@ -579,4 +759,83 @@ function Ly_Move(position)
         position = str2double(position);
     end
     Motor_Move(position, motors_properties.Ly_motor_num);
+end
+
+
+%% Block generation and management functions
+
+function [BlockSequence, BlockParams] = GenerateBlockSequence(S)
+    % Generate sequence of blocks with parameters
+    % Returns:
+    %   BlockSequence: Array of block type indices (e.g., [1 2 3 1 2 3...])
+    %   BlockParams: Struct array with parameters for each block instance
+
+    % Count how many block types are defined
+    maxBlockTypes = 10;  % Check up to 10 block types
+    numBlockTypes = 0;
+    for i = 1:maxBlockTypes
+        if isfield(S.GUI, sprintf('Block%d_DelayDuration', i))
+            numBlockTypes = i;
+        else
+            break;
+        end
+    end
+
+    if numBlockTypes == 0
+        error('No block types defined in S.GUI');
+    end
+
+    % Generate randomized sequence of block types
+    if S.GUI.BlocksEnabled
+        numBlocks = S.GUI.NumBlocks;
+        % Randomize block order
+        BlockSequence = [];
+        fullCycles = floor(numBlocks / numBlockTypes);
+        remainder = mod(numBlocks, numBlockTypes);
+
+        % Add full cycles of all block types (randomized)
+        for cycle = 1:fullCycles
+            BlockSequence = [BlockSequence, randperm(numBlockTypes)]; %#ok<AGROW>
+        end
+
+        % Add remainder blocks (randomized)
+        if remainder > 0
+            BlockSequence = [BlockSequence, randperm(numBlockTypes, remainder)]; %#ok<AGROW>
+        end
+    else
+        % Single block mode - just use block type 1
+        BlockSequence = ones(1, S.GUI.NumBlocks);
+    end
+
+    % Create BlockParams struct array with parameters for each block instance
+    BlockParams = struct();
+    for i = 1:length(BlockSequence)
+        blockType = BlockSequence(i);
+        BlockParams(i).BlockType = blockType;
+        BlockParams(i).DelayDuration = S.GUI.(sprintf('Block%d_DelayDuration', blockType));
+        BlockParams(i).ErrorResetSegment = S.GUI.(sprintf('Block%d_ErrorResetSegment', blockType));
+        BlockParams(i).RewardLeft = S.GUI.(sprintf('Block%d_RewardLeft', blockType));
+        BlockParams(i).RewardRight = S.GUI.(sprintf('Block%d_RewardRight', blockType));
+    end
+end
+
+
+function [currentBlock, trialInBlock] = GetCurrentBlock(trialNumber, blockSize, totalBlocks)
+    % Determine which block a trial belongs to and its position within the block
+    % Inputs:
+    %   trialNumber: Current trial number (1-indexed)
+    %   blockSize: Number of trials per block
+    %   totalBlocks: Total number of blocks available
+    % Returns:
+    %   currentBlock: Block index (1-indexed)
+    %   trialInBlock: Trial number within block (1 to blockSize)
+
+    currentBlock = ceil(trialNumber / blockSize);
+
+    % Wrap around if we exceed total blocks (repeat sequence)
+    if currentBlock > totalBlocks
+        currentBlock = mod(currentBlock - 1, totalBlocks) + 1;
+    end
+
+    trialInBlock = mod(trialNumber - 1, blockSize) + 1;
 end
