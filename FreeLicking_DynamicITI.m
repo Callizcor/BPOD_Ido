@@ -70,6 +70,16 @@ if isempty(fieldnames(S))
     S.GUI.Z_NonLickable = 60000;       % Z position retracted (microsteps)
     S.GUI.Lx_motor_pos = 310000;       % Lx center position
     S.GUI.Ly_motor_pos = 310000;       % Ly center position
+
+    % Organize GUI into panels
+    S.GUIPanels.Timers = {'ResponseDuration', 'BurstIgnoreDuration', 'DebounceDuration', ...
+                          'InitRewardSize', 'InitWaitDuration', 'TrialTimeout'};
+    S.GUIPanels.BlockDesign = {'BlocksEnabled', 'BlockSize', 'NumBlocks', ...
+                               'Block1_DelayDuration', 'Block1_ErrorResetSegment', 'Block1_RewardLeft', 'Block1_RewardRight', ...
+                               'Block2_DelayDuration', 'Block2_ErrorResetSegment', 'Block2_RewardLeft', 'Block2_RewardRight', ...
+                               'Block3_DelayDuration', 'Block3_ErrorResetSegment', 'Block3_RewardLeft', 'Block3_RewardRight'};
+    S.GUIPanels.Motors = {'ZaberEnabled', 'Z_motor_pos', 'Z_NonLickable', 'Lx_motor_pos', 'Ly_motor_pos'};
+    S.GUIPanels.Hardware = {'CameraSyncEnabled', 'CameraPulseWidth', 'BitcodeEnabled'};
 end
 
 % Display parameters in GUI
@@ -93,6 +103,10 @@ BpodSystem.Data.BlockNumber = [];       % Which block each trial belongs to
 BpodSystem.Data.TrialInBlock = [];      % Trial number within block
 BpodSystem.Data.BlockParams = [];       % Parameters for each block
 BpodSystem.Data.BlockSequence = [];     % Sequence of block types
+
+% Water tracking
+BpodSystem.Data.TotalWaterDelivered = 0;  % Total water in uL (microliters)
+BpodSystem.Data.WaterPerTrial = [];       % Water delivered per trial in uL
 
 %% Initialize Zaber Motors (if enabled)
 global motors motors_properties
@@ -141,6 +155,17 @@ if S.GUI.ZaberEnabled
     end
 end
 
+%% Pause protocol for motor adjustments
+disp('==========================================================');
+disp('PROTOCOL PAUSED - Adjust motors and settings as needed');
+disp('Press PLAY button in Bpod console to begin session');
+disp('==========================================================');
+BpodSystem.Status.Pause = 1;
+HandlePauseCondition;
+if BpodSystem.Status.BeingUsed == 0
+    return;
+end
+
 %% Session Initialization - Deliver water to both ports
 disp('=== SESSION INITIALIZATION ===');
 disp('Delivering initial water rewards to both ports...');
@@ -170,6 +195,11 @@ sma = AddState(sma, 'Name', 'WaitPeriod2', ...
     'OutputActions', {});
 SendStateMachine(sma);
 RawEvents = RunStateMachine();
+
+% Track initial water (assuming 5uL per second valve open time)
+initWater = 2 * S.GUI.InitRewardSize * 5000;  % 2 ports * time * 5uL/s = uL total
+BpodSystem.Data.TotalWaterDelivered = initWater;
+fprintf('Initial water delivered: %.1f uL (%.3fs per port)\n', initWater, S.GUI.InitRewardSize);
 
 disp('Session initialization complete. Ready for trials.');
 
@@ -415,6 +445,12 @@ for currentTrial = 1:MaxTrials
             BpodSystem.Data.TrialRewardSize(currentTrial) = 0;  % No port selected
         end
 
+        % Calculate and track water delivered (assuming 5uL per second valve open time)
+        % Total water = valve time * number of rewards * 5000 uL/s
+        trialWater = BpodSystem.Data.TrialRewardSize(currentTrial) * responseLicks * 5000;
+        BpodSystem.Data.WaterPerTrial(currentTrial) = trialWater;
+        BpodSystem.Data.TotalWaterDelivered = BpodSystem.Data.TotalWaterDelivered + trialWater;
+
         % Update online plots
         UpdateOnlinePlot(BpodSystem.Data, currentTrial);
 
@@ -446,7 +482,9 @@ for currentTrial = 1:MaxTrials
             fprintf(' | Delay: %d reset(s)', burstCount);
         end
 
-        fprintf(' | Reward: %.3fs\n', BpodSystem.Data.TrialRewardSize(currentTrial));
+        fprintf(' | Reward: %.3fs | Total water: %.1f uL\n', ...
+            BpodSystem.Data.TrialRewardSize(currentTrial), ...
+            BpodSystem.Data.TotalWaterDelivered);
     end
 
     %% Handle Pause and Stop
