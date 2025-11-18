@@ -64,7 +64,7 @@ if isempty(fieldnames(S))
     S.GUI.BitcodeEnabled = 1;          % Enable trial sync bitcode
 
     % Zaber motor parameters
-    S.GUI.ZaberEnabled = 0;            % Enable Zaber motors (set to 1 if available)
+    S.GUI.ZaberEnabled = 1;            % Enable Zaber motors (set to 0 to disable)
     S.GUI.ZaberPort = 'COM6';          % Serial port (COM18/COM6/COM11)
     S.GUI.Z_motor_pos = 210000;        % Z position for licking (microsteps)
     S.GUI.Z_NonLickable = 60000;       % Z position retracted (microsteps)
@@ -158,8 +158,12 @@ end
 %% Pause protocol for motor adjustments
 disp('==========================================================');
 disp('PROTOCOL PAUSED - Adjust motors and settings as needed');
-disp('Motor positions can be adjusted via Motor Control GUI');
-disp('Press ENTER after changing a motor value to move it');
+if S.GUI.ZaberEnabled
+    disp('Motor Control GUI opened - adjust positions and click Move buttons');
+else
+    disp('WARNING: ZaberEnabled=0 - Motors are DISABLED');
+    disp('Set ZaberEnabled=1 in GUI to enable motor control');
+end
 disp('Press PLAY button in Bpod console to begin session');
 disp('==========================================================');
 
@@ -464,26 +468,15 @@ for currentTrial = 1:MaxTrials
         SaveBpodSessionData;
 
         % Display trial information with block and delay progress
-        portName = {'Left', 'Right', 'None'};
-        if selectedPort == 0
-            portIdx = 3;  % None
-        else
-            portIdx = min(selectedPort, 2);  % 1 or 2
-        end
+        portName = {'Left', 'Right'};
 
-        fprintf('Trial %d [Block %d-%d]: ', ...
-            currentTrial, currentBlock, trialInBlock);
+        fprintf('Trial %d [Block %d-%d]: Port %s | Licks: %d', ...
+            currentTrial, currentBlock, trialInBlock, portName{selectedPort}, responseLicks);
 
-        if outcome == 1
-            fprintf('✓ COMPLETED | Port: %s | Licks: %d', ...
-                portName{portIdx}, responseLicks);
-            if burstCount == 0
-                fprintf(' | Delay: PERFECT');
-            else
-                fprintf(' | Delay: %d reset(s)', burstCount);
-            end
+        if burstCount == 0
+            fprintf(' | Delay: ✓ PERFECT');
         else
-            fprintf('✗ IGNORED | No port selected (timeout)');
+            fprintf(' | Delay: %d reset(s)', burstCount);
         end
 
         fprintf(' | Water: %.1f/%.1f uL\n', ...
@@ -617,31 +610,33 @@ function UpdateOnlinePlot(Data, currentTrial)
     global BpodSystem
 
     if currentTrial == 1
-        % Initialize figure with larger size for 6 subplots
-        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Block-Based Trial Outcomes', ...
-            'NumberTitle', 'off', 'Position', [100 100 1400 900]);
+        % Initialize figure with larger size for 5 subplots
+        BpodSystem.ProtocolFigures.OutcomePlot = figure('Name', 'Session Performance', ...
+            'NumberTitle', 'off', 'Position', [100 100 1400 700]);
     end
 
     figure(BpodSystem.ProtocolFigures.OutcomePlot);
     clf;  % Clear figure for redrawing
 
-    % --- Subplot 1: Trial outcomes with block boundaries ---
-    subplot(3,2,1);
-    outcomes = Data.Outcomes(1:currentTrial);
+    % --- Subplot 1: Port choice over trials with block boundaries ---
+    subplot(2,3,1);
     trialTypes = Data.TrialTypes(1:currentTrial);
 
-    % Plot outcomes colored by port choice
+    % Plot port choices
     hold on;
     for i = 1:currentTrial
         if trialTypes(i) == 1  % Left port
             color = [0 0.4470 0.7410];  % Blue
+            yVal = 1;
         elseif trialTypes(i) == 2  % Right port
             color = [0.8500 0.3250 0.0980];  % Orange
+            yVal = 2;
         else  % No choice
             color = [0.5 0.5 0.5];  % Gray
+            yVal = 1.5;
         end
 
-        plot(i, outcomes(i), 'o', 'MarkerFaceColor', color, 'MarkerEdgeColor', color, 'MarkerSize', 6);
+        plot(i, yVal, 'o', 'MarkerFaceColor', color, 'MarkerEdgeColor', color, 'MarkerSize', 6);
     end
 
     % Draw block boundaries
@@ -653,42 +648,19 @@ function UpdateOnlinePlot(Data, currentTrial)
     end
 
     xlabel('Trial Number');
-    ylabel('Outcome');
-    title('Trial Outcomes (Blue=Left, Orange=Right)');
-    ylim([-1.5 1.5]);
-    yticks([-1 0 1]);
-    yticklabels({'Ignore', 'Error', 'Correct'});
+    ylabel('Port Choice');
+    title('Port Selection (Blue=Left, Orange=Right)');
+    ylim([0.5 2.5]);
+    yticks([1 2]);
+    yticklabels({'Left', 'Right'});
     grid on;
     hold off;
 
-    % --- Subplot 2: Performance by port choice ---
-    subplot(3,2,2);
+    % --- Subplot 2: Port selection distribution ---
+    subplot(2,3,2);
     leftTrials = find(trialTypes == 1);
     rightTrials = find(trialTypes == 2);
 
-    if ~isempty(leftTrials)
-        perfLeft = sum(outcomes(leftTrials) == 1) / length(leftTrials) * 100;
-    else
-        perfLeft = 0;
-    end
-
-    if ~isempty(rightTrials)
-        perfRight = sum(outcomes(rightTrials) == 1) / length(rightTrials) * 100;
-    else
-        perfRight = 0;
-    end
-
-    bar([1 2], [perfLeft perfRight]);
-    xlabel('Port');
-    ylabel('Correct (%)');
-    title(sprintf('Performance by Port (L=%.1f%%, R=%.1f%%)', perfLeft, perfRight));
-    xticks([1 2]);
-    xticklabels({'Left', 'Right'});
-    ylim([0 100]);
-    grid on;
-
-    % --- Subplot 3: Port selection distribution ---
-    subplot(3,2,3);
     portSelection = Data.SelectedPort(1:currentTrial);
     histogram(portSelection, [0.5 1.5 2.5]);
     xlabel('Selected Port');
@@ -697,8 +669,8 @@ function UpdateOnlinePlot(Data, currentTrial)
     xticks([1 2]);
     xticklabels({'Left', 'Right'});
 
-    % --- Subplot 4: Delay resets over trials ---
-    subplot(3,2,4);
+    % --- Subplot 3: Delay resets over trials ---
+    subplot(2,3,3);
     delayResets = Data.DelayTimerResets(1:currentTrial);
     plot(1:currentTrial, delayResets, 'o-', 'MarkerSize', 4);
     xlabel('Trial Number');
@@ -706,8 +678,8 @@ function UpdateOnlinePlot(Data, currentTrial)
     title(sprintf('Delay Timer Resets (Mean=%.2f)', mean(delayResets)));
     grid on;
 
-    % --- Subplot 5: Block parameters summary ---
-    subplot(3,2,5);
+    % --- Subplot 4: Block parameters summary ---
+    subplot(2,3,4);
     axis off;
     if isfield(Data, 'BlockNumber') && ~isempty(Data.BlockNumber)
         currentBlock = Data.BlockNumber(currentTrial);
@@ -730,8 +702,8 @@ function UpdateOnlinePlot(Data, currentTrial)
             'VerticalAlignment', 'middle');
     end
 
-    % --- Subplot 6: Water consumption tracking ---
-    subplot(3,2,6);
+    % --- Subplot 5: Water consumption tracking ---
+    subplot(2,3,5);
     if isfield(Data, 'WaterPerTrial') && ~isempty(Data.WaterPerTrial)
         waterPerTrial = Data.WaterPerTrial(1:currentTrial);
 
@@ -752,6 +724,34 @@ function UpdateOnlinePlot(Data, currentTrial)
         grid on;
     else
         text(0.5, 0.5, 'No water data', 'HorizontalAlignment', 'center');
+        axis off;
+    end
+
+    % --- Subplot 6: Licks per trial ---
+    subplot(2,3,6);
+    if isfield(Data, 'ResponseLickCount') && ~isempty(Data.ResponseLickCount)
+        lickCounts = Data.ResponseLickCount(1:currentTrial);
+
+        hold on;
+        % Color by port
+        for i = 1:currentTrial
+            if trialTypes(i) == 1  % Left port
+                color = [0 0.4470 0.7410];  % Blue
+            elseif trialTypes(i) == 2  % Right port
+                color = [0.8500 0.3250 0.0980];  % Orange
+            else
+                color = [0.5 0.5 0.5];  % Gray
+            end
+            bar(i, lickCounts(i), 'FaceColor', color, 'EdgeColor', 'none');
+        end
+        hold off;
+
+        xlabel('Trial Number');
+        ylabel('Lick Count');
+        title(sprintf('Licks per Trial (Mean=%.1f)', mean(lickCounts)));
+        grid on;
+    else
+        text(0.5, 0.5, 'No lick data', 'HorizontalAlignment', 'center');
         axis off;
     end
 
